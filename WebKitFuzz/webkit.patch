@@ -1,0 +1,414 @@
+diff -ruN webkitgtk-2.20.2-original/Source/WebCore/page/DOMWindow.cpp webkitgtk-2.20.2-patched/Source/WebCore/page/DOMWindow.cpp
+--- webkitgtk-2.20.2-original/Source/WebCore/page/DOMWindow.cpp	2018-02-19 03:04:38.000000000 -0800
++++ webkitgtk-2.20.2-patched/Source/WebCore/page/DOMWindow.cpp	2018-06-07 08:48:13.506202000 -0700
+@@ -27,6 +27,8 @@
+ #include "config.h"
+ #include "DOMWindow.h"
+ 
++#include "GCController.h"
++
+ #include "BackForwardController.h"
+ #include "BarProp.h"
+ #include "CSSComputedStyleDeclaration.h"
+@@ -1129,6 +1131,9 @@
+ 
+ void DOMWindow::alert(const String& message)
+ {
++    WebCore::GCController::singleton().garbageCollectNow();
++    return;
++
+     if (!m_frame)
+         return;
+ 
+diff -ruN webkitgtk-2.20.2-original/Source/WebKit/PlatformGTK.cmake webkitgtk-2.20.2-patched/Source/WebKit/PlatformGTK.cmake
+--- webkitgtk-2.20.2-original/Source/WebKit/PlatformGTK.cmake	2018-04-10 00:33:13.000000000 -0700
++++ webkitgtk-2.20.2-patched/Source/WebKit/PlatformGTK.cmake	2018-08-30 04:41:59.686417149 -0700
+@@ -732,7 +732,7 @@
+         OUTPUT ${CMAKE_BINARY_DIR}/WebKit2-${WEBKITGTK_API_VERSION}.gir
+         DEPENDS WebKit
+         DEPENDS ${CMAKE_BINARY_DIR}/JavaScriptCore-${WEBKITGTK_API_VERSION}.gir
+-        COMMAND CC=${CMAKE_C_COMPILER} CFLAGS=-Wno-deprecated-declarations LDFLAGS=
++        COMMAND CC=${CMAKE_C_COMPILER} CFLAGS=\"-Wno-deprecated-declarations -fsanitize=address\" LDFLAGS=\"-fsanitize=address\"
+             ${LOADER_LIBRARY_PATH_VAR}="${INTROSPECTION_ADDITIONAL_LIBRARY_PATH}"
+             ${INTROSPECTION_SCANNER}
+             --quiet
+@@ -774,8 +774,8 @@
+         OUTPUT ${CMAKE_BINARY_DIR}/WebKit2WebExtension-${WEBKITGTK_API_VERSION}.gir
+         DEPENDS ${CMAKE_BINARY_DIR}/JavaScriptCore-${WEBKITGTK_API_VERSION}.gir
+         DEPENDS ${CMAKE_BINARY_DIR}/WebKit2-${WEBKITGTK_API_VERSION}.gir
+-        COMMAND CC=${CMAKE_C_COMPILER} CFLAGS=-Wno-deprecated-declarations
+-            LDFLAGS="${INTROSPECTION_ADDITIONAL_LDFLAGS}"
++        COMMAND CC=${CMAKE_C_COMPILER} CFLAGS=\"-Wno-deprecated-declarations -fsanitize=address\"
++            LDFLAGS=\"${INTROSPECTION_ADDITIONAL_LDFLAGS} -fsanitize=address\"
+             ${LOADER_LIBRARY_PATH_VAR}="${INTROSPECTION_ADDITIONAL_LIBRARY_PATH}"
+             ${INTROSPECTION_SCANNER}
+             --quiet
+diff -ruN webkitgtk-2.20.2-original/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp webkitgtk-2.20.2-patched/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp
+--- webkitgtk-2.20.2-original/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp	2018-02-19 22:53:53.000000000 -0800
++++ webkitgtk-2.20.2-patched/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp	2018-06-07 08:56:57.436930000 -0700
+@@ -40,6 +40,9 @@
+ #include <wtf/text/CString.h>
+ #include <wtf/text/WTFString.h>
+ 
++#include <sys/types.h>
++#include <sys/wait.h>
++
+ #if PLATFORM(WPE)
+ #include <wpe/renderer-host.h>
+ #endif
+@@ -47,6 +50,149 @@
+ namespace WebKit {
+ using namespace WebCore;
+ 
++void HandleAsanReport(pid_t pid) {
++  // 1. Get the "log_path" from ASAN_OPTIONS.
++  // 2. Copy the log_path.[pid] to log_path.[mypid].
++  char *options = getenv("ASAN_OPTIONS");
++  if (options == NULL) {
++    fprintf(stdout, "error: no ASAN_OPTIONS\n");
++    return;
++  }
++
++  char *log_path = strstr(options, "log_path=");
++  if (log_path == NULL) {
++    fprintf(stdout, "error: no log_path=\n");
++    return;
++  }
++
++  log_path += sizeof("log_path=") - 1;  // Move to the value.
++
++  // This might not be the last option - find the separator and change it
++  // to a NUL-terminator.
++  log_path = strdup(log_path);
++
++  char *p = strchr(log_path, ',');
++  if (p != NULL) {
++    *p = '\0';
++  }
++
++  char pid_as_string[32] = {0};
++
++  char *src_path = (char *)malloc(strlen(log_path)+32);
++  strcpy(src_path,log_path);
++  strcat(src_path, ".");
++  snprintf(pid_as_string, sizeof(pid_as_string), "%i", pid);
++  strcat(src_path, pid_as_string);
++
++  char *dst_path = (char *)malloc(strlen(log_path)+32);
++  strcpy(dst_path,log_path);
++  strcat(dst_path, ".");
++  snprintf(pid_as_string, sizeof(pid_as_string), "%i", getpid());
++  strcat(dst_path, pid_as_string);
++
++  free(log_path);
++
++  FILE *f_src = fopen(src_path, "rb");
++  if (f_src == NULL) {
++    fprintf(stdout, "error: %s not found\n", src_path);
++    return;
++  }
++
++  FILE *f_dst = fopen(dst_path, "wb");
++  if (f_dst == NULL) {
++    fprintf(stdout, "error: %s not found\n", dst_path);
++    fclose(f_src);
++    return;
++  }
++
++  char *buffer = (char *)malloc(64 * 1024);
++  for (;;) {
++    size_t r = fread(buffer, 1, 64 * 1024, f_src);
++    if (r == 0) {
++      break;
++    }
++
++    fwrite(buffer, 1, r, f_dst);
++  }
++  free(buffer);
++
++  fclose(f_dst);
++  fclose(f_src);
++  fprintf(stdout, "note: ASAN logs copied from %s to %s\n",
++          src_path, dst_path);
++  free(src_path);
++  free(dst_path);
++}
++
++void *wait_thread(void *arg) {
++  fprintf(stdout, "Started WebProcess, starting monitoring thread.\n");
++
++  pid_t pid = (pid_t)(size_t)arg;
++
++  fprintf(stdout, "pid: %i\n", pid);
++
++  for (;;) {
++    int status = 0;
++    pid_t ev_pid = waitpid(pid, &status, __WALL);
++
++    fprintf(stdout, "ev_pid: %i, status: %.8x\n", ev_pid, status);
++
++    if (ev_pid == -1) {
++      if (errno == ECHILD) {
++        fprintf(stdout, "all children exited\n");
++        return NULL;
++      }
++      fprintf(stdout, "errno: %i\n", errno);
++      perror("error");
++      return NULL;
++    }
++
++    long deliver_sig = 0;  // NOLINT
++
++    // Check if the process actually crashed.
++    if ((status & 0xff) == 0x7f && (status & 0xffff0000) == 0) {
++      // An actual signal.
++      int sig = (status >> 8) & 0xff;
++
++      switch (sig) {
++        case SIGFPE:
++        case SIGSEGV:
++        case SIGILL:
++          fprintf(stdout, "  ^ crashed!\n");
++          deliver_sig = sig;
++          kill(getpid(), sig);
++          return NULL;
++
++        default:
++          fprintf(stdout, "  ^ delivering signal\n");
++          break;
++      }
++    }
++
++    // Maybe normal exit?
++    if ((status & 0xff) == 0x00) {
++      int exit_code = (status >> 8) & 0xff;
++      const int kAsanMagicExitCode = 42;
++
++      switch (exit_code) {
++        case 0:  // Clean exit.
++          fprintf(stdout, "  ^ clean exit!\n");
++          return NULL;
++
++        case kAsanMagicExitCode:
++          fprintf(stdout, "  ^ ASAN!\n");
++          HandleAsanReport(ev_pid);
++          exit(kAsanMagicExitCode);
++
++        default:
++          fprintf(stdout, "  ^ unclean exit!\n");
++          return NULL;
++      }
++    }
++  }
++  return NULL;
++}
++
+ static void childSetupFunction(gpointer userData)
+ {
+     int socket = GPOINTER_TO_INT(userData);
+@@ -138,8 +284,20 @@
+     argv[i++] = nullptr;
+ 
+     GUniqueOutPtr<GError> error;
+-    if (!g_spawn_async(nullptr, argv, nullptr, G_SPAWN_LEAVE_DESCRIPTORS_OPEN, childSetupFunction, GINT_TO_POINTER(socketPair.server), &pid, &error.outPtr()))
+-        g_error("Unable to fork a new child process: %s", error->message);
++
++    if(m_launchOptions.processType == ProcessLauncher::ProcessType::Web) {
++      if (!g_spawn_async(nullptr, argv, nullptr, GSpawnFlags(G_SPAWN_LEAVE_DESCRIPTORS_OPEN | G_SPAWN_DO_NOT_REAP_CHILD), childSetupFunction, GINT_TO_POINTER(socketPair.server), &pid, &error.outPtr())) {
++          g_printerr("Unable to fork a new WebProcess: %s.\n", error->message);
++          ASSERT_NOT_REACHED();
++      }
++      pthread_t thread_id;
++      pthread_create(&thread_id, NULL, wait_thread, (void *)pid);
++    } else {
++      if (!g_spawn_async(nullptr, argv, nullptr, G_SPAWN_LEAVE_DESCRIPTORS_OPEN, childSetupFunction, GINT_TO_POINTER(socketPair.server), &pid, &error.outPtr())) {
++          g_printerr("Unable to fork a new WebProcess: %s.\n", error->message);
++          ASSERT_NOT_REACHED();
++      }
++    }
+ 
+     // Don't expose the parent socket to potential future children.
+     if (!setCloseOnExec(socketPair.client))
+diff -ruN webkitgtk-2.20.2-original/Tools/CMakeLists.txt webkitgtk-2.20.2-patched/Tools/CMakeLists.txt
+--- webkitgtk-2.20.2-original/Tools/CMakeLists.txt	2018-02-18 23:45:33.000000000 -0800
++++ webkitgtk-2.20.2-patched/Tools/CMakeLists.txt	2018-06-07 08:57:57.872532000 -0700
+@@ -15,6 +15,9 @@
+     if (ENABLE_MINIBROWSER)
+         add_subdirectory(MiniBrowser/gtk)
+     endif ()
++
++    add_subdirectory(webkitfuzz)
++
+ elseif ("${PORT}" STREQUAL "Mac")
+     add_subdirectory(DumpRenderTree)
+     add_subdirectory(WebKitTestRunner)
+diff -ruN webkitgtk-2.20.2-original/Tools/webkitfuzz/CMakeLists.txt webkitgtk-2.20.2-patched/Tools/webkitfuzz/CMakeLists.txt
+--- webkitgtk-2.20.2-original/Tools/webkitfuzz/CMakeLists.txt	1969-12-31 16:00:00.000000000 -0800
++++ webkitgtk-2.20.2-patched/Tools/webkitfuzz/CMakeLists.txt	2017-12-13 06:42:56.968691000 -0800
+@@ -0,0 +1,40 @@
++set(WEBKITFUZZ_DIR "${TOOLS_DIR}/webkitfuzz")
++
++set(webkitfuzz_SOURCES
++    ${WEBKITFUZZ_DIR}/main.c
++)
++
++set(webkitfuzz_INCLUDE_DIRECTORIES
++    ${CMAKE_BINARY_DIR}
++    ${DERIVED_SOURCES_WEBKIT2GTK_DIR}
++    ${FORWARDING_HEADERS_WEBKIT2GTK_DIR}
++    ${FORWARDING_HEADERS_DIR}
++    ${CMAKE_SOURCE_DIR}/Source
++)
++
++set(webkitfuzz_SYSTEM_INCLUDE_DIRECTORIES
++    ${GTK3_INCLUDE_DIRS}
++    ${GLIB_INCLUDE_DIRS}
++    ${LIBSOUP_INCLUDE_DIRS}
++)
++
++set(webkitfuzz_LIBRARIES
++    ${JavaScriptCore_LIBRARY_NAME}
++    WebKit
++    ${GTK3_LIBRARIES}
++    ${GLIB_LIBRARIES}
++    ${LIBSOUP_LIBRARIES}
++)
++
++if (DEVELOPER_MODE)
++    add_definitions(-DWEBKIT_INJECTED_BUNDLE_PATH="${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
++endif ()
++
++add_definitions(-DGDK_VERSION_MIN_REQUIRED=GDK_VERSION_3_6)
++
++include_directories(${webkitfuzz_INCLUDE_DIRECTORIES})
++include_directories(SYSTEM ${webkitfuzz_SYSTEM_INCLUDE_DIRECTORIES})
++add_executable(webkitfuzz ${webkitfuzz_SOURCES})
++target_link_libraries(webkitfuzz ${webkitfuzz_LIBRARIES})
++
++install(TARGETS webkitfuzz DESTINATION "${LIBEXEC_INSTALL_DIR}")
+diff -ruN webkitgtk-2.20.2-original/Tools/webkitfuzz/main.c webkitgtk-2.20.2-patched/Tools/webkitfuzz/main.c
+--- webkitgtk-2.20.2-original/Tools/webkitfuzz/main.c	1969-12-31 16:00:00.000000000 -0800
++++ webkitgtk-2.20.2-patched/Tools/webkitfuzz/main.c	2018-08-30 04:48:22.833020025 -0700
+@@ -0,0 +1,122 @@
++#include <gtk/gtk.h>
++#include <webkit2/webkit2.h>
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include <sys/types.h>
++#include <sys/wait.h>
++#include <errno.h>
++
++#define TIMEOUT 15000
++
++static void destroyWindowCb(GtkWidget* widget, GtkWidget* window);
++static gboolean closeWebViewCb(WebKitWebView* webView, GtkWidget* window);
++
++#define TYPE_URL 0
++#define TYPE_FILE 1
++
++gboolean timeout_kill(gpointer data) {
++  printf("timeout\n");
++  gtk_main_quit();
++  return true;
++}
++
++int main(int argc, char* argv[])
++{
++    int inputtype = TYPE_FILE;
++    char *databuf; 
++
++    if(argc < 2) {
++        printf("Usage: %s <url|file> [timeout]\n", argv[0]);
++        return 43;
++    }
++
++    int timeout;
++    if(argc >= 3) {
++        timeout = atoi(argv[2])*1000;
++    } else {
++        timeout = TIMEOUT;
++    }
++
++    //pthread_t thread_id;
++    //pthread_create(&thread_id, NULL, wait_thread, NULL);
++
++    printf("webkitfuzz started\n");
++
++    if((strncmp(argv[1],"http://", 7) == 0) || (strncmp(argv[1],"https://", 8) == 0)) {
++        inputtype = TYPE_URL;
++    } else {
++        inputtype = TYPE_FILE;
++        FILE *fp = fopen(argv[1], "rb");
++        if(!fp) {
++            printf("Error opening %s\n", argv[1]);
++            return 43;
++        }
++        fseek(fp, 0, SEEK_END);
++        size_t filesize = ftell(fp);
++        fseek(fp, 0, SEEK_SET);
++        databuf = (char *)malloc(filesize+1);
++        fread(databuf, 1, filesize, fp);
++        databuf[filesize] = 0;
++        fclose(fp);
++    }
++
++    // Initialize GTK+
++    gtk_init(&argc, &argv);
++
++    webkit_web_context_set_process_model(webkit_web_context_get_default(), WEBKIT_PROCESS_MODEL_SHARED_SECONDARY_PROCESS);
++
++    // Create an 800x600 window that will contain the browser instance
++    GtkWidget *main_window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
++    //GtkWidget *main_window = gtk_offscreen_window_new();
++    gtk_window_set_default_size(GTK_WINDOW(main_window), 800, 600);
++
++    // Create a browser instance
++    WebKitWebView *webView = WEBKIT_WEB_VIEW(webkit_web_view_new());
++
++    // Put the browser area into the main window
++    gtk_container_add(GTK_CONTAINER(main_window), GTK_WIDGET(webView));
++
++    // Set up callbacks so that if either the main window or the browser instance is
++    // closed, the program will exit
++    g_signal_connect(main_window, "destroy", G_CALLBACK(destroyWindowCb), NULL);
++    g_signal_connect(webView, "close", G_CALLBACK(closeWebViewCb), main_window);
++
++    // Load a web page into the browser instance
++    if(inputtype == TYPE_URL) {
++       webkit_web_view_load_uri(webView, argv[1]);
++    } else {
++       webkit_web_view_load_html(webView, databuf, NULL);
++    }
++
++    // Make sure that when the browser area becomes visible, it will get mouse
++    // and keyboard events
++    gtk_widget_grab_focus(GTK_WIDGET(webView));
++
++    g_timeout_add (timeout, timeout_kill, NULL);
++
++    // Make sure the main window and all its contents are visible
++    gtk_widget_show_all(main_window);
++
++    // Run the main GTK+ event loop
++    gtk_main();
++
++    printf("exiting\n");
++
++    return 43;
++}
++
++
++static void destroyWindowCb(GtkWidget* widget, GtkWidget* window)
++{
++    gtk_main_quit();
++}
++
++static gboolean closeWebViewCb(WebKitWebView* webView, GtkWidget* window)
++{
++    gtk_widget_destroy(window);
++    return TRUE;
++}
++
