@@ -1,6 +1,6 @@
 ### WebKit Fuzzing
 
-webkit.patch is a patch file that makes it easier to build WebKitGTK+ with ASan and Fuzz it.
+webkit.patch is a patch file that makes it easier to build WebKitGTK+ with ASan and fuzz it.
 
 The patch file was made with WebKitGTK+ version 2.20.2 (https://webkitgtk.org/releases/webkitgtk-2.20.2.tar.xz) and might not work as is on other versions.
 
