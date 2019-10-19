@@ -1,5 +1,17 @@
 ### WebKit Fuzzing
 
+[UPDATE 19/10/2019]
+
+WebKitGTK+ version 2.26 introduced temporarily [WEBKIT_USE_SINGLE_WEB_PROCESS=1](https://trac.webkit.org/changeset?reponame=webkit&new=249421%40releases%2FWebKitGTK%2Fwebkit-2.26&old=249420%40releases%2FWebKitGTK%2Fwebkit-2.26) to force the single process model. [WEBKIT_PROCESS_MODEL_SHARED_SECONDARY_PROCESS](https://webkitgtk.org/reference/webkit2gtk/2.26.0/WebKitWebContext.html) used by 'webkitfuzz' is deprecated and using it has no effect, and therefore it is not necessary to monitor new processes. 
+
+There is no need to patch PlatformGTK.cmake to enable AddressSanitizer or different sanitizers. 
+```
+cmake -DCMAKE_BUILD_TYPE=Release -DENABLE_SANITIZERS=address ..  
+```
+---
+
+
+
 webkit.patch is a patch file that makes it easier to build WebKitGTK+ with ASan and fuzz it.
 
 The patch file was made with WebKitGTK+ version 2.20.2 (https://webkitgtk.org/releases/webkitgtk-2.20.2.tar.xz) and might not work as is on other versions.
