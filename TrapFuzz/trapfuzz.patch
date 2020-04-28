@@ -1,0 +1,236 @@
+commit 30e6e00a9ab5c85b0a5a18306c390cf46684522e
+Author: Samuel Groß <saelo@google.com>
+Date:   Mon Oct 14 10:36:30 2019 +0200
+
+    Initial trapfuzz implementation
+
+diff --git a/Makefile b/Makefile
+index c014ad25..47fd6c8a 100644
+--- a/Makefile
++++ b/Makefile
+@@ -69,7 +69,9 @@ else ifeq ($(OS),Darwin)
+     # Figure out which crash reporter to use.
+     CRASHWRANGLER := third_party/mac
+     OS_VERSION := $(shell sw_vers -productVersion)
+-    ifneq (,$(findstring 10.14,$(OS_VERSION)))
++    ifneq (,$(findstring 10.15,$(OS_VERSION)))
++        CRASH_REPORT := $(CRASHWRANGLER)/CrashReport_Sierra.o
++    else ifneq (,$(findstring 10.14,$(OS_VERSION)))
+         CRASH_REPORT := $(CRASHWRANGLER)/CrashReport_Sierra.o
+     else ifneq (,$(findstring 10.13,$(OS_VERSION)))
+         CRASH_REPORT := $(CRASHWRANGLER)/CrashReport_Sierra.o
+diff --git a/hfuzz_cc/hfuzz-cc.c b/hfuzz_cc/hfuzz-cc.c
+index df985482..ed8ba0be 100644
+--- a/hfuzz_cc/hfuzz-cc.c
++++ b/hfuzz_cc/hfuzz-cc.c
+@@ -310,10 +310,10 @@ static void commonOpts(int* j, char** args) {
+             args[(*j)++] = "-fsanitize-coverage=trace-pc,trace-cmp";
+         }
+     } else {
+-        args[(*j)++] = "-Wno-unused-command-line-argument";
+-        args[(*j)++] = "-fsanitize-coverage=trace-pc-guard,trace-cmp,trace-div,indirect-calls";
+-        args[(*j)++] = "-mllvm";
+-        args[(*j)++] = "-sanitizer-coverage-prune-blocks=1";
++        //args[(*j)++] = "-Wno-unused-command-line-argument";
++        //args[(*j)++] = "-fsanitize-coverage=trace-pc-guard,trace-cmp,trace-div,indirect-calls";
++        //args[(*j)++] = "-mllvm";
++        //args[(*j)++] = "-sanitizer-coverage-prune-blocks=1";
+     }
+ 
+     /*
+diff --git a/libhfuzz/instrument.c b/libhfuzz/instrument.c
+index fa0a39b0..9f4224a6 100644
+--- a/libhfuzz/instrument.c
++++ b/libhfuzz/instrument.c
+@@ -4,6 +4,7 @@
+ #include <errno.h>
+ #include <fcntl.h>
+ #include <inttypes.h>
++#include <signal.h>
+ #include <stdbool.h>
+ #include <stdint.h>
+ #include <stdio.h>
+@@ -395,3 +396,172 @@ void instrumentUpdateCmpMap(uintptr_t addr, uint32_t v) {
+         ATOMIC_POST_ADD(feedback->pidFeedbackCmp[my_thread_no], v - prev);
+     }
+ }
++
++
++// Trapfuzz
++
++// Thanks ianbeer@
++#include <mach-o/dyld_images.h>
++static void* find_library_load_address(const char* library_name) {
++  kern_return_t err;
++
++  // get the list of all loaded modules from dyld
++  // the task_info mach API will get the address of the dyld all_image_info struct for the given task
++  // from which we can get the names and load addresses of all modules
++  task_dyld_info_data_t task_dyld_info;
++  mach_msg_type_number_t count = TASK_DYLD_INFO_COUNT;
++  err = task_info(mach_task_self(), TASK_DYLD_INFO, (task_info_t)&task_dyld_info, &count);
++
++  const struct dyld_all_image_infos* all_image_infos = (const struct dyld_all_image_infos*)task_dyld_info.all_image_info_addr;
++  const struct dyld_image_info* image_infos = all_image_infos->infoArray;
++
++  for(size_t i = 0; i < all_image_infos->infoArrayCount; i++){
++    const char* image_name = image_infos[i].imageFilePath;
++    mach_vm_address_t image_load_address = (mach_vm_address_t)image_infos[i].imageLoadAddress;
++    if (strstr(image_name, library_name)){
++      return (void*)image_load_address;
++    }
++  }
++  return NULL;
++}
++
++// Translates the address of a trap instruction to the corresponding address in the shadow memory.
++// As a basic block can be less than four bytes in size, but we need 4 bytes of storage for every patch
++// (3 byte bitmap index, 1 byte original value), we create 4 shadow mappings and select the correct one
++// from the last 2 bits of the address.
++#define SHADOW(addr) ((uint32_t*)(((uintptr_t)addr & 0xfffffffffffffffc) - 0x200000000000 - ((uintptr_t)addr & 0x3)*0x10000000000))
++
++static void sigtrap_handler(int signum, siginfo_t* si, void* context) {
++    // Must re-execute the instruction, so decrement PC by one instruction.
++#if defined(__APPLE__) && defined(__LP64__)
++    ucontext_t* ctx = (ucontext_t*)context;
++    ctx->uc_mcontext->__ss.__rip -= 1;
++#else
++#error "Unsupported platform"
++#endif
++
++    uint8_t* faultaddr = (uint8_t*)si->si_addr - 1;
++    // If the trap didn't come from our instrumentation, then we probably will just segfault here
++    uint32_t shadow = *SHADOW(faultaddr);
++
++    uint8_t orig_byte = shadow & 0xff;
++    uint32_t index = shadow >> 8;
++
++    // Index zero is invalid so that it is still possible to catch actual trap instructions in instrumented libraries.
++    if (index == 0) {
++        abort();
++    }
++
++    // Restore original instruction
++    *faultaddr = orig_byte;
++
++    // Update coverage information.
++    bool prev = ATOMIC_XCHG(feedback->pcGuardMap[index], true);
++    if (prev == false) {
++        ATOMIC_PRE_INC_RELAXED(feedback->pidFeedbackEdge[my_thread_no]);
++    }
++}
++
++void initializeTrapfuzz() {
++    char* filename = getenv("TRAPFUZZ_FILE");       // TODO rename maybe?
++    if (!filename) {
++        LOG_F("TRAPFUZZ_FILE environment variable not set");
++    }
++
++    FILE* patches = fopen(filename, "r");
++    if (!patches) {
++        LOG_F("Couldn't open patchfile %s", filename);
++    }
++
++    // Index into the coverage bitmap for the current trap instruction.
++    int bitmap_index = -1;
++
++    // Base address of the library currently being instrumented.
++    uint8_t* lib_base = NULL;
++    // Size of the library, or rather it's .text section which will be modified and thus has to be mprotect'ed.
++    size_t lib_size = 0;
++
++    char* line = NULL;
++    size_t nread, len = 0;
++    while ((nread = getline(&line, &len, patches)) != -1) {
++        char* end = line + len;
++
++        char* col = strchr(line, ':');
++        if (col) {
++            // It's a library:size pair
++            *col = 0;
++
++            lib_base = find_library_load_address(line);
++            if (!lib_base) {
++                LOG_F("Library %s does not appear to be loaded", line);
++            }
++
++            lib_size = strtoul(col + 1, &end, 16);
++            if (lib_size % 0x1000 != 0) {
++                LOG_F("Invalid library size 0x%zx. Must be multiple of 0x1000", lib_size);
++            }
++
++            // Make library code writable.
++            if (mprotect(lib_base, lib_size, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
++                LOG_F("Failed to mprotect library %s writable", line);
++            }
++
++            // Create shadow memory.
++            for (int i = 0; i < 4; i++) {
++                void* shadow_addr = SHADOW(lib_base + i);
++                void* shadow = mmap(shadow_addr, lib_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, 0, 0);
++                if (shadow == MAP_FAILED) {
++                    LOG_F("Failed to mmap shadow memory");
++                }
++            }
++
++            // Done, continue with next line.
++            continue;
++        }
++
++        // It's an offset, parse it and do the patching.
++        unsigned long offset = strtoul(line, &end, 16);
++        if (offset > lib_size) {
++            LOG_F("Invalid offset: 0x%lx. Current library is 0x%zx bytes large", offset, lib_size);
++        }
++
++        bitmap_index++;
++
++        if (bitmap_index >= _HF_PC_GUARD_MAX) {
++            LOG_F("Too many basic blocks to instrument");
++        }
++
++        uint32_t* shadow = SHADOW(lib_base + offset);
++        if (*shadow != 0) {
++            LOG_F("Potentially duplicate patch entry: 0x%lx", offset);
++        }
++
++        if (ATOMIC_GET(feedback->pcGuardMap[bitmap_index])) {
++            // This instrumentation trap has already been found.
++            continue;
++        }
++
++        // Make lookup entry in shadow memory.
++        uint8_t orig_byte = lib_base[offset];
++        *shadow = (bitmap_index << 8) | orig_byte;
++
++        // Replace instruction with int3, an instrumentation trap.
++        lib_base[offset] = 0xcc;
++    }
++
++    // Store number of basic blocks for statistical purposes.
++    if (ATOMIC_GET(feedback->guardNb) < bitmap_index + 1) {
++        ATOMIC_SET(feedback->guardNb, bitmap_index + 1);
++    }
++
++    free(line);
++    fclose(patches);
++
++    // Install signal handler for SIGTRAP.
++    struct sigaction s;
++    s.sa_flags = SA_SIGINFO;        // TODO add SA_NODEFER?
++    s.sa_sigaction = sigtrap_handler;
++    sigemptyset(&s.sa_mask);
++    sigaction(SIGTRAP, &s, 0);
++}
++
+diff --git a/libhfuzz/instrument.h b/libhfuzz/instrument.h
+index 87647fce..e073222f 100644
+--- a/libhfuzz/instrument.h
++++ b/libhfuzz/instrument.h
+@@ -29,4 +29,6 @@
+ void instrumentUpdateCmpMap(uintptr_t addr, uint32_t v);
+ void instrumentClearNewCov();
+ 
++void initializeTrapfuzz();
++
+ #endif /* ifdef _HF_LIBHFUZZ_INSTRUMENT_H_ */
