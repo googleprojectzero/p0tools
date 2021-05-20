@@ -1,0 +1,1044 @@
+commit f0539e49a6ec8f1b7b89d1082a9e6bfaeefffd47
+Author: Samuel Groß <saelo@google.com>
+Date:   Fri May 7 13:21:40 2021 +0200
+
+    Hacky iOSFuzz PoC
+    
+    Applies to https://github.com/google/honggfuzz @ 3f07c7d23c853e899c0fb0aa4b8c2defaff52e61
+
+diff --git a/Makefile b/Makefile
+index 13a0a74d..dca09950 100644
+--- a/Makefile
++++ b/Makefile
+@@ -29,7 +29,8 @@ HFUZZ_CC_SRCS := hfuzz_cc/hfuzz-cc.c
+ COMMON_CFLAGS := -std=c11 -I/usr/local/include -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-format-truncation -Wno-override-init -I.
+ COMMON_LDFLAGS := -pthread -lm
+ COMMON_SRCS := $(sort $(wildcard *.c))
+-CFLAGS ?= -O3 -mtune=native -funroll-loops
++#CFLAGS ?= -O3 -mtune=native -funroll-loops
++CFLAGS ?= -O3 -funroll-loops
+ LDFLAGS ?=
+ LIBS_CFLAGS ?= -fPIC -fno-stack-protector -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0  # fortify-source intercepts some functions, so we disable it for libraries
+ GREP_COLOR ?=
+@@ -100,7 +101,7 @@ else ifeq ($(OS),Darwin)
+     else ifneq (,$(findstring 10.8,$(OS_VERSION)))
+         CRASH_REPORT := $(CRASHWRANGLER)/CrashReport_Mountain_Lion.o
+     else
+-        $(error Unsupported MAC OS X version)
++        #$(error Unsupported MAC OS X version $(OS_VERSION))
+     endif
+ 
+     # Figure out which XCode SDK to use.
+@@ -110,9 +111,12 @@ else ifeq ($(OS),Darwin)
+     SDK_NAME := macosx
+     SDK := $(shell xcrun --sdk $(SDK_NAME) --show-sdk-path 2>/dev/null)
+ 
+-    CC := $(shell xcrun --sdk $(SDK_NAME) --find cc)
+-    LD := $(shell xcrun --sdk $(SDK_NAME) --find cc)
+-    ARCH_CFLAGS := -isysroot $(SDK) \
++    #CC := $(shell xcrun --sdk $(SDK_NAME) --find cc)
++    CC := clang
++    #LD := $(shell xcrun --sdk $(SDK_NAME) --find cc)
++    LD := clang
++    ARCH_CFLAGS := -arch arm64 \
++	               -isysroot $(SDK) \
+                    -x objective-c -pedantic -fblocks \
+                    -Wno-unused-parameter \
+                    -Wimplicit -Wunused -Wcomment -Wchar-subscripts -Wuninitialized \
+@@ -121,10 +125,11 @@ else ifeq ($(OS),Darwin)
+                    -Wno-embedded-directive
+     ARCH_LDFLAGS := -F/System/Library/PrivateFrameworks -framework CoreSymbolication -framework IOKit \
+                     -F$(SDK_V)/System/Library/Frameworks -F$(SDK_V)/System/Library/PrivateFrameworks \
+-                    -F$(SDK)/System/Library/Frameworks \
++                    -F$(SDK)/System/Library/Frameworks -F$(SDK)/System/Library/PrivateFrameworks \
++                    -L$(SDK)/usr/lib \
+                     -framework Foundation -framework ApplicationServices -framework Symbolication \
+                     -framework CoreServices -framework CrashReporterSupport -framework CoreFoundation \
+-                    -framework CommerceKit $(CRASH_REPORT)
++                    -framework CommerceKit
+ 
+     XCODE_VER := $(shell xcodebuild -version | grep $(GREP_COLOR) "^Xcode" | cut -d " " -f2)
+ # OS Darwin
+@@ -135,7 +140,7 @@ else ifeq ($(OS),NetBSD)
+     ARCH_CFLAGS := -I/usr/pkg/include \
+                    -D_KERNTYPES
+     ARCH_LDFLAGS := -L/usr/local/lib -L/usr/pkg/lib \
+-                    -lcapstone -lrt -lm \
++                    -lcapstone -lrt \
+                     -Wl,--rpath=/usr/pkg/lib
+ 
+ # OS NetBSD
+@@ -273,6 +278,7 @@ mac/arch.o: mac/arch.c mac/mach_exc.h mac/mach_excServer.h
+ 
+ $(BIN): $(OBJS) $(LCOMMON_ARCH)
+ 	$(LD) -o $(BIN) $(OBJS) $(LCOMMON_ARCH) $(LDFLAGS)
++	codesign -s "XXXXXXXXXX" --entitlements entitlements.xml honggfuzz
+ 
+ $(HFUZZ_CC_BIN): $(LCOMMON_ARCH) $(LHFUZZ_ARCH) $(LNETDRIVER_ARCH) $(HFUZZ_CC_SRCS)
+ 	$(LD) -o $@ $(HFUZZ_CC_SRCS) $(LCOMMON_ARCH) $(LDFLAGS) $(CFLAGS) $(CFLAGS_BLOCKS) -D_HFUZZ_INC_PATH=$(HFUZZ_INC)
+diff --git a/arch.h b/arch.h
+index 39c5609a..7bee5e78 100644
+--- a/arch.h
++++ b/arch.h
+@@ -32,6 +32,8 @@ extern bool arch_archInit(honggfuzz_t* fuzz);
+ 
+ extern bool arch_archThreadInit(run_t* run);
+ 
++extern pid_t arch_spawn(run_t* run, int* sv);
++
+ extern pid_t arch_fork(run_t* run);
+ 
+ extern void arch_reapChild(run_t* run);
+diff --git a/entitlements.xml b/entitlements.xml
+new file mode 100644
+index 00000000..be55aedd
+--- /dev/null
++++ b/entitlements.xml
+@@ -0,0 +1,8 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"\>
++<plist version="1.0">
++<dict>
++        <key>com.apple.security.cs.debugger</key>
++        <true/>
++</dict>
++</plist>
+diff --git a/hfuzz_cc/hfuzz-cc.c b/hfuzz_cc/hfuzz-cc.c
+index 06e0d560..4f0f9d18 100644
+--- a/hfuzz_cc/hfuzz-cc.c
++++ b/hfuzz_cc/hfuzz-cc.c
+@@ -363,10 +363,10 @@ static void commonPostOpts(int* j, char** args) {
+             }
+             args[(*j)++] = "-fsanitize-coverage=trace-pc-guard,trace-cmp,trace-div,indirect-calls";
+         } else {
+-            args[(*j)++] = "-fno-sanitize-coverage=trace-pc-guard";
+-            args[(*j)++] = "-fno-sanitize=fuzzer";
+-            args[(*j)++] = "-fsanitize=fuzzer-no-link";
+-            args[(*j)++] = "-fsanitize-coverage=trace-cmp,trace-div,indirect-calls";
++            //args[(*j)++] = "-fno-sanitize-coverage=trace-pc-guard";
++            //args[(*j)++] = "-fno-sanitize=fuzzer";
++            //args[(*j)++] = "-fsanitize=fuzzer-no-link";
++            //args[(*j)++] = "-fsanitize-coverage=trace-cmp,trace-div,indirect-calls";
+         }
+     }
+ }
+diff --git a/libhfcommon/files.c b/libhfcommon/files.c
+index 5a7763ec..8b833328 100644
+--- a/libhfcommon/files.c
++++ b/libhfcommon/files.c
+@@ -340,7 +340,8 @@ int files_createSharedMem(size_t sz, const char* name, bool exportmap) {
+     if (exportmap) {
+         char path[PATH_MAX];
+         snprintf(path, sizeof(path), "./%s", name);
+-        if ((fd = open(path, O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644)) == -1) {
++        //if ((fd = open(path, O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644)) == -1) {
++        if ((fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644)) == -1) {
+             PLOG_W("open('%s')", path);
+             return -1;
+         }
+@@ -348,7 +349,8 @@ int files_createSharedMem(size_t sz, const char* name, bool exportmap) {
+ 
+ #if defined(_HF_ARCH_LINUX)
+     if (fd == -1) {
+-        fd = syscall(__NR_memfd_create, name, (uintptr_t)(MFD_CLOEXEC));
++        //fd = syscall(__NR_memfd_create, name, (uintptr_t)(MFD_CLOEXEC));
++        fd = syscall(__NR_memfd_create, name, (uintptr_t)(0));
+     }
+ #endif /* defined(_HF_ARCH_LINUX) */
+ 
+@@ -382,7 +384,8 @@ int files_createSharedMem(size_t sz, const char* name, bool exportmap) {
+     if (fd == -1) {
+         char template[PATH_MAX];
+         snprintf(template, sizeof(template), "/tmp/%s.XXXXXX", name);
+-        if ((fd = mkostemp(template, O_CLOEXEC)) == -1) {
++        //if ((fd = mkostemp(template, O_CLOEXEC)) == -1) {
++        if ((fd = mkostemp(template, 0)) == -1) {
+             PLOG_W("mkstemp('%s')", template);
+             return -1;
+         }
+diff --git a/libhfuzz/fetch.c b/libhfuzz/fetch.c
+index e4037420..a5b5f800 100644
+--- a/libhfuzz/fetch.c
++++ b/libhfuzz/fetch.c
+@@ -4,6 +4,7 @@
+ #include <fcntl.h>
+ #include <stdbool.h>
+ #include <stdint.h>
++#include <stdio.h>
+ #include <sys/mman.h>
+ #include <unistd.h>
+ 
+@@ -30,11 +31,16 @@ __attribute__((constructor)) static void init(void) {
+     }
+ }
+ 
++void init_hf_fetch() {
++    init();
++}
++
+ /*
+  * Instruct *SAN to treat the input buffer to be of a specific size, treating all accesses
+  * beyond that as access violations
+  */
+ static void fetchSanPoison(const uint8_t* buf, size_t len) {
++#if 0
+     __attribute__((weak)) extern void __asan_unpoison_memory_region(const void* addr, size_t sz);
+     __attribute__((weak)) extern void __msan_unpoison(const void* addr, size_t sz);
+ 
+@@ -55,6 +61,7 @@ static void fetchSanPoison(const uint8_t* buf, size_t len) {
+     if (__msan_poison) {
+         __msan_poison(&buf[len], _HF_INPUT_MAX_SIZE - len);
+     }
++#endif
+ }
+ 
+ void HonggfuzzFetchData(const uint8_t** buf_ptr, size_t* len_ptr) {
+diff --git a/libhfuzz/instrument.c b/libhfuzz/instrument.c
+index 88a72be3..dc445faf 100644
+--- a/libhfuzz/instrument.c
++++ b/libhfuzz/instrument.c
+@@ -13,7 +13,9 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <strings.h>
++#include <stdio.h>
+ #include <sys/mman.h>
++#include <sys/errno.h>
+ #include <sys/stat.h>
+ #include <sys/types.h>
+ #include <unistd.h>
+@@ -122,7 +124,7 @@ static void initializeCmpFeedback(void) {
+     ATOMIC_SET(globalCmpFeedback, ret);
+ }
+ 
+-static bool initializeLocalCovFeedback(void) {
++/*static bool initializeLocalCovFeedback(void) {
+     struct stat st;
+     if (fstat(_HF_PERTHREAD_BITMAP_FD, &st) == -1) {
+         return false;
+@@ -142,6 +144,7 @@ static bool initializeLocalCovFeedback(void) {
+     }
+     return true;
+ }
++*/
+ 
+ static bool initializeGlobalCovFeedback(void) {
+     struct stat st;
+@@ -191,10 +194,11 @@ static void initializeInstrument(void) {
+         globalCovFeedback = &bbMapFb;
+         LOG_F("Could not intialize the global coverage feedback map");
+     }
+-    if (!initializeLocalCovFeedback()) {
++    // Can fail due to races in dup2 in subproc.c etc.
++    /*if (!initializeLocalCovFeedback()) {
+         localCovFeedback = &bbMapFb;
+         LOG_F("Could not intialize the local coverage feedback map");
+-    }
++    }*/
+     initializeCmpFeedback();
+ 
+     /* Initialize native functions found in libc */
+@@ -821,3 +825,224 @@ void instrumentAddConstStrN(const char* s, size_t n) {
+ bool instrumentConstAvail(void) {
+     return (ATOMIC_GET(globalCmpFeedback) != NULL);
+ }
++
++// Trapfuzz
++
++#include <stdio.h>
++#include <mach/vm_page_size.h>
++
++#define page_align(addr) (void*)((uintptr_t)(addr) & (~(vm_page_size - 1)))
++
++extern void sys_icache_invalidate( void *start, size_t len);
++
++// Thanks ianbeer@
++#include <mach-o/dyld_images.h>
++static void* find_library_load_address(const char* library_name) {
++  kern_return_t err;
++
++  // get the list of all loaded modules from dyld
++  // the task_info mach API will get the address of the dyld all_image_info struct for the given task
++  // from which we can get the names and load addresses of all modules
++  task_dyld_info_data_t task_dyld_info;
++  mach_msg_type_number_t count = TASK_DYLD_INFO_COUNT;
++  err = task_info(mach_task_self(), TASK_DYLD_INFO, (task_info_t)&task_dyld_info, &count);
++
++  const struct dyld_all_image_infos* all_image_infos = (const struct dyld_all_image_infos*)task_dyld_info.all_image_info_addr;
++  const struct dyld_image_info* image_infos = all_image_infos->infoArray;
++
++  for(size_t i = 0; i < all_image_infos->infoArrayCount; i++){
++    const char* image_name = image_infos[i].imageFilePath;
++    mach_vm_address_t image_load_address = (mach_vm_address_t)image_infos[i].imageLoadAddress;
++    if (strstr(image_name, library_name)){
++      return (void*)image_load_address;
++    }
++  }
++  return NULL;
++}
++
++// Translates the address of a trap instruction to the corresponding address in the shadow memory.
++#define SHADOW(addr) ((uint32_t*)(((uintptr_t)addr) + 0x200000000))
++#define SHADOW2(addr) ((uint32_t*)(((uintptr_t)addr) + 0x300000000))
++
++static void sigtrap_handler(int signum, siginfo_t* si, void* context) {
++    uint32_t* faultaddr = (uint32_t*)si->si_addr;
++
++    // If the trap didn't come from our instrumentation, then we probably will just segfault here
++    uint32_t orig_instr = *SHADOW(faultaddr);
++
++    // Index is stored in the 2nd shadow mapping
++    uint32_t index = *SHADOW2(faultaddr);
++
++    // Index zero is invalid so that it is still possible to catch actual trap instructions in instrumented libraries.
++    if (index == 0 || orig_instr == 0) {
++        puts("ABORTING");
++        abort();
++    }
++
++    // Make library code writable.
++    if (mprotect(page_align(faultaddr), vm_page_size, PROT_READ | PROT_WRITE) != 0) {
++        LOG_F("Failed to map code at %p writable", faultaddr);
++    }
++
++    // Restore original instruction
++    *faultaddr = orig_instr;
++
++    // must flush instruction cache on ARM
++    sys_icache_invalidate(faultaddr, 4);
++
++    // Make library code executable again.
++    if (mprotect(page_align(faultaddr), vm_page_size, PROT_READ | PROT_EXEC) != 0) {
++        LOG_F("Failed to map code at %p executable", faultaddr);
++    }
++
++    // Update coverage information.
++    // Basically see __cyg_profile_func_enter
++    const uint8_t v = ATOMIC_PRE_INC(globalCovFeedback->pcGuardMap[index]);
++    if (v == 1) {
++        ATOMIC_PRE_INC(globalCovFeedback->pidNewEdge[my_thread_no]);
++    }
++
++    __asm__ volatile("dmb ishst" ::: "memory");
++}
++
++void initializeTrapfuzz() {
++    hfuzzInstrumentInit();
++
++    char* filename = getenv("TRAPFUZZ_FILE");       // TODO rename maybe?
++    if (!filename) {
++        LOG_F("TRAPFUZZ_FILE environment variable not set");
++    }
++
++    FILE* patches = fopen(filename, "r");
++    if (!patches) {
++        LOG_F("Couldn't open patchfile %s", filename);
++    }
++
++    // Index into the coverage bitmap for the current trap instruction.
++    uint32_t bitmap_index = 0;
++
++    // Base address of the library currently being instrumented.
++    uint8_t* lib_base = NULL;
++    // Size of the library, or rather it's .text section which will be modified and thus has to be mprotect'ed.
++    size_t lib_size = 0;
++
++    char* line = NULL;
++    ssize_t nread = 0;
++    size_t len = 0;
++    while ((nread = getline(&line, &len, patches)) != -1) {
++        char* end = line + len;
++
++        char* col = strchr(line, ':');
++        if (col) {
++            // It's a library:size pair
++            *col = 0;
++
++            if (lib_base) {
++                // Make library code executable again.
++                kern_return_t kr = vm_protect(mach_task_self(), (uintptr_t)lib_base, lib_size, false, VM_PROT_READ | VM_PROT_EXECUTE);
++                if (kr != KERN_SUCCESS) {
++                    LOG_F("Failed to mprotect code at %p executable", lib_base);
++                }
++            }
++
++            lib_base = (uint8_t*)find_library_load_address(line);
++            if (!lib_base) {
++                LOG_F("Library %s does not appear to be loaded", line);
++            }
++
++            lib_size = strtoul(col + 1, &end, 16);
++            if (lib_size % vm_page_size != 0) {
++                lib_size += vm_page_size - (lib_size % vm_page_size);
++            }
++
++            uint8_t* lib_page_start = lib_base;
++            if ((uintptr_t)lib_page_start % vm_page_size != 0) {
++                lib_size += vm_page_size;
++                lib_page_start = (uint8_t*)page_align(lib_base);
++            }
++
++            // Make library code writable.
++            kern_return_t kr = vm_protect(mach_task_self(), (uintptr_t)lib_base, lib_size, false, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
++            if (kr != KERN_SUCCESS) {
++                LOG_F("Failed to mprotect library %s writable: %s", line, strerror(errno));
++            }
++
++            // Create shadow memory.
++            void* shadow_addr = SHADOW(lib_page_start);
++            LOG_D("Creating shadow memory for %s of size 0x%zx at %p", line, lib_size, shadow_addr);
++            void* shadow = mmap(shadow_addr, lib_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, 0, 0);
++            if (shadow == MAP_FAILED) {
++                LOG_F("Failed to mmap shadow memory: %s", strerror(errno));
++            }
++
++            void* shadow2_addr = SHADOW2(lib_page_start);
++            LOG_D("Creating 2nd shadow memory for %s of size 0x%zx at %p", line, lib_size, shadow2_addr);
++            void* shadow2 = mmap(shadow2_addr, lib_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, 0, 0);
++            if (shadow2 == MAP_FAILED) {
++                LOG_F("Failed to mmap shadow memory: %s", strerror(errno));
++            }
++
++            // Done, continue with next line.
++            continue;
++        }
++
++        // It's an offset, parse it and do the patching.
++        unsigned long offset = strtoul(line, &end, 16);
++        if (offset > lib_size) {
++            LOG_F("Invalid offset: 0x%lx. Current library is 0x%zx bytes large", offset, lib_size);
++        }
++        if (offset % 4 != 0) {
++            LOG_F("Invalid offset: 0x%lx is not 4-byte aligned", offset);
++        }
++
++        bitmap_index++;
++
++        if (bitmap_index >= _HF_PC_GUARD_MAX) {
++            LOG_F("Too many basic blocks to instrument");
++        }
++
++        uint32_t* shadow = SHADOW(lib_base + offset);
++        uint32_t* shadow2 = SHADOW2(lib_base + offset);
++        if (*shadow != 0) {
++            LOG_F("Potentially duplicate patch entry: 0x%lx", offset);
++        }
++
++        if (ATOMIC_GET(globalCovFeedback->pcGuardMap[bitmap_index])) {
++            // This instrumentation trap has already been found.
++            continue;
++        }
++
++        // Make lookup entry in shadow memory.
++        uint32_t orig_instr = *(uint32_t*)(lib_base + offset);
++        *shadow = orig_instr;
++
++        // BRK instruction encodes an imm16 value in bits 5-20. Just use 1 for it
++        uint32_t brk_instr = 0xd4200000 | (1 << 5);
++        *(uint32_t*)(lib_base + offset) = brk_instr;
++
++        *shadow2 = bitmap_index;
++    }
++
++    // Make library code executable again.
++    kern_return_t kr = vm_protect(mach_task_self(), (uintptr_t)lib_base, lib_size, false, VM_PROT_READ | VM_PROT_EXECUTE);
++    if (kr != KERN_SUCCESS) {
++        LOG_F("Failed to mprotect code at %p executable", lib_base);
++    }
++
++    // Store number of basic blocks.
++    if (ATOMIC_GET(globalCovFeedback->guardNb) < bitmap_index + 1) {
++        ATOMIC_SET(globalCovFeedback->guardNb, bitmap_index + 1);
++    }
++
++    free(line);
++    fclose(patches);
++
++    // Install signal handler for SIGTRAP.
++    struct sigaction s;
++    s.sa_flags = SA_SIGINFO;        // TODO add SA_NODEFER?
++    s.sa_sigaction = sigtrap_handler;
++    sigemptyset(&s.sa_mask);
++    sigaction(SIGTRAP, &s, 0);
++}
++
++
+diff --git a/libhfuzz/instrument.h b/libhfuzz/instrument.h
+index 791a9f3d..d60f8127 100644
+--- a/libhfuzz/instrument.h
++++ b/libhfuzz/instrument.h
+@@ -38,4 +38,6 @@ extern void     instrumentAddConstStr(const char* s);
+ extern void     instrumentAddConstStrN(const char* s, size_t n);
+ extern bool     instrumentConstAvail();
+ 
++//extern void initializeTrapfuzz();
++
+ #endif /* ifdef _HF_LIBHFUZZ_INSTRUMENT_H_ */
+diff --git a/mac/arch.c b/mac/arch.c
+index 6103b803..8c24d443 100644
+--- a/mac/arch.c
++++ b/mac/arch.c
+@@ -29,7 +29,6 @@
+ #include <dirent.h>
+ #include <errno.h>
+ #include <fcntl.h>
+-#include <mach/i386/thread_status.h>
+ #include <mach/mach.h>
+ #include <mach/mach_types.h>
+ #include <mach/mach_vm.h>
+@@ -61,6 +60,15 @@
+ #include "mach_excServer.h"
+ #include "subproc.h"
+ 
++#ifdef __arm64__
++#include <mach/arm/thread_status.h>
++#else
++#error "Unsupported arch
++//#include <mach/i386/thread_status.h>
++#endif
++
++#include <spawn.h>
++
+ /*
+  * Interface to third_party/CrashReport_*.o
+  */
+@@ -88,13 +96,15 @@ static mach_port_t g_exception_port = MACH_PORT_NULL;
+ /*
+  * Global to store crash info in exception handler thread
+  */
+-run_t g_fuzzer_crash_information[PID_MAX + 1];
++// These structures are too large and lead to "ld: ARM64 ADRP out of range (5041266688 max is +/-4GB): from _arch_launchChild (0x100012D30) to _g_service_name (0x22C7CC300) in '_arch_launchChild' from mac/arch.o for architecture arm64"
++//run_t g_fuzzer_crash_information[PID_MAX + 1];
++run_t* g_fuzzer_crash_information;
+ 
+ /*
+  * Global to store the CrashWrangler generated callstack from
+  * the exception handler thread
+  */
+-static char* g_fuzzer_crash_callstack[PID_MAX + 1];
++static char** g_fuzzer_crash_callstack;
+ 
+ /*
+  * Global to have a unique service name for each honggfuzz process
+@@ -288,6 +298,170 @@ pid_t arch_fork(run_t* run HF_ATTR_UNUSED) {
+     return fork();
+ }
+ 
++#include <mach/mach_init.h>
++#include <mach/vm_map.h>
++#include <mach/vm_page_size.h>
++
++#define page_align(addr) (vm_address_t)((uintptr_t)(addr) & (~(vm_page_size - 1)))
++
++#define PLATFORM_IOS 2
++
++extern char **environ;
++
++extern int posix_spawnattr_set_platform_np(posix_spawnattr_t*, int, int);
++
++static unsigned int dyld_patch_offset;
++
++static void instrument(pid_t pid) {
++    kern_return_t kr;
++    task_t task;
++
++    LOG_D("Patching child process to allow dyld interposing...");
++
++    // Attach to the target process
++    kr = task_for_pid(mach_task_self(), pid, &task);
++    if (kr != KERN_SUCCESS) {
++        LOG_F("task_for_pid failed. Is this binary signed and posesses the com.apple.security.cs.debugger entitlement?");
++    }
++
++    vm_address_t dyld_addr = 0;
++    int headers_found = 0;
++
++    vm_address_t addr = 0;
++    vm_size_t size;
++    vm_region_submap_info_data_64_t info;
++    mach_msg_type_number_t info_count = VM_REGION_SUBMAP_INFO_COUNT_64;
++    unsigned int depth = 0;
++
++    while (1) {
++        // get next memory region
++        kr = vm_region_recurse_64(task, &addr, &size, &depth, (vm_region_info_t)&info, &info_count);
++
++        if (kr != KERN_SUCCESS)
++            break;
++
++        unsigned int header;
++        vm_size_t bytes_read;
++        kr = vm_read_overwrite(task, addr, 4, (vm_address_t)&header, &bytes_read);
++        if (kr != KERN_SUCCESS) {
++            // TODO handle this, some mappings are probably just not readable
++            LOG_F("vm_read_overwrite failed");
++        }
++
++        if (bytes_read != 4) {
++            // TODO handle this properly
++            LOG_F("vm_read read to few bytes");
++        }
++
++        if (header == 0xfeedfacf) {
++            headers_found++;
++        }
++
++        if (headers_found == 2) {
++            // This is dyld
++            dyld_addr = addr;
++            break;
++        }
++
++        addr += size;
++    }
++
++    if (dyld_addr == 0) {
++        LOG_F("[-] Failed to find /usr/lib/dyld");
++    }
++
++    LOG_D("/usr/lib/dyld mapped at 0x%lx", dyld_addr);
++
++    vm_address_t patch_addr = dyld_addr + dyld_patch_offset;
++
++    // VM_PROT_COPY forces COW, probably, see vm_map_protect in vm_map.c
++    kr = vm_protect(task, page_align(patch_addr), vm_page_size, false, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
++    if (kr != KERN_SUCCESS) {
++        LOG_F("vm_protect failed");
++    }
++
++    // MOV X8, 0x5f
++    // STR X8, [X1]
++    // RET
++    const char* code = "\xe8\x0b\x80\xd2\x28\x00\x00\xf9\xc0\x03\x5f\xd6";
++
++    kr = vm_write(task, patch_addr, (vm_offset_t)code, 12);
++    if (kr != KERN_SUCCESS) {
++        LOG_F("vm_write failed");
++    }
++
++    kr = vm_protect(task, page_align(patch_addr), vm_page_size, false, VM_PROT_READ | VM_PROT_EXECUTE);
++    if (kr != KERN_SUCCESS) {
++        LOG_F("vm_protect failed");
++    }
++
++    LOG_D("Sucessfully patched _amfi_check_dyld_policy_self");
++}
++
++pid_t arch_spawn(run_t* run, int* sv) {
++    LOG_D("Launching '%s' on file '%s' (%s mode)", run->args[0],
++        run->global->exe.persistent ? "PERSISTENT_MODE" : _HF_INPUT_FILE_PATH,
++        run->global->exe.fuzzStdin ? "stdin" : "file");
++
++    pid_t pid;
++    int rv;
++
++    posix_spawnattr_t attr;
++    rv = posix_spawnattr_init(&attr);
++    if (rv != 0) {
++        LOG_F("posix_spawnattr_init failed");
++    }
++
++    rv = posix_spawnattr_setflags(&attr, POSIX_SPAWN_START_SUSPENDED);
++    if (rv != 0) {
++        LOG_F("posix_spawnattr_setflags failed");
++    }
++
++    rv = posix_spawnattr_set_platform_np(&attr, PLATFORM_IOS, 0);
++    if (rv != 0) {
++        LOG_F("posix_spawnattr_set_platform_np failed");
++    }
++
++    // TODO could also use setenv instead since g_service_name is global anyway
++    char buf[1024];
++    memset(buf, 0, 1024);
++    strcat(buf, "HF_SERVICE_NAME=");
++    strcat(buf, g_service_name);
++
++    char buf1[128];
++    char buf2[128];
++    memset(buf1, 0, 128);
++    memset(buf2, 0, 128);
++    snprintf(buf1, 128, "HF_SV_0=%i", sv[0]);
++    snprintf(buf2, 128, "HF_SV_1=%i", sv[1]);
++
++    char buf3[128];
++    memset(buf3, 0, 128);
++    snprintf(buf3, 128, "HFUZZ_THREAD_NO=%i", run->fuzzNo);
++
++    char buf4[128];
++    memset(buf4, 0, 128);
++    snprintf(buf4, 128, "HF_INPUT_FD=%i", run->dynfile->fd);
++
++    char* argv[] = {(char*)run->args[0], NULL};
++    char* envp[] = {"DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib", "OS_ACTIVITY_MODE=disable", "TRAPFUZZ_FILE=REPLACE_ME", buf, buf1, buf2, buf3, buf4, NULL};
++    rv = posix_spawn(&pid, run->args[0], NULL, &attr, argv, envp);
++    if (rv != 0) {
++        LOG_F("posix_spawn failed");
++    }
++
++    LOG_D("Child process created with pid: %i\n", pid);
++
++    instrument(pid);
++
++    LOG_D("Sending SIGCONT to continue child\n");
++    kill(pid, SIGCONT);
++
++    posix_spawnattr_destroy(&attr);
++
++    return pid;
++}
++
+ bool arch_launchChild(run_t* run) {
+     LOG_D("Launching '%s' on file '%s' (%s mode)", run->args[0],
+         run->global->exe.persistent ? "PERSISTENT_MODE" : _HF_INPUT_FILE_PATH,
+@@ -419,6 +593,20 @@ bool arch_archInit(honggfuzz_t* hfuzz) {
+               "~/Library/Preferences/com.apple.DebugSymbols.plist");
+     }
+ 
++    // Find dyld patch point
++    FILE* output = popen("nm -arch arm64e /usr/lib/dyld  | grep _amfi_check_dyld_policy_self", "r");
++    int r = fscanf(output, "%x t _amfi_check_dyld_policy_self", &dyld_patch_offset);
++    if (r != 1) {
++        LOG_F("Failed to find offset of _amfi_check_dyld_policy_self in /usr/lib/dyld");
++    }
++
++    LOG_I("_amfi_check_dyld_policy_self at offset 0x%x in /usr/lib/dyld\n", dyld_patch_offset);
++
++
++    // Allocate crash info buffers
++    g_fuzzer_crash_information = calloc(PID_MAX + 1, sizeof(run_t));
++    g_fuzzer_crash_callstack = calloc(PID_MAX + 1, sizeof(char*));
++
+     /*
+      * Allocate exception port.
+      */
+@@ -696,13 +884,8 @@ kern_return_t catch_mach_exception_raise_state_identity(
+      * Get program counter.
+      * Cast to void* in order to silence the alignment warnings
+      */
+-    x86_thread_state_t* platform_in_state = ((x86_thread_state_t*)(void*)in_state);
+-
+-    if (x86_THREAD_STATE32 == platform_in_state->tsh.flavor) {
+-        run->pc = platform_in_state->uts.ts32.__eip;
+-    } else {
+-        run->pc = platform_in_state->uts.ts64.__rip;
+-    }
++    arm_thread_state64_t* platform_in_state = ((arm_thread_state64_t*)(void*)in_state);
++    run->pc = __darwin_arm_thread_state64_get_pc(*platform_in_state);
+ 
+     /*
+      * Get the exception type
+diff --git a/subproc.c b/subproc.c
+index d6cfca3b..47371b26 100644
+--- a/subproc.c
++++ b/subproc.c
+@@ -208,6 +208,7 @@ static bool subproc_PrepareExecv(run_t* run) {
+     /*
+      * The address space limit. If big enough - roughly the size of RAM used
+      */
++#if 0
+ #ifdef RLIMIT_AS
+     if (run->global->exe.asLimit) {
+         const struct rlimit rl = {
+@@ -261,7 +262,9 @@ static bool subproc_PrepareExecv(run_t* run) {
+         }
+     }
+ #endif /* ifdef RLIMIT_STACK */
++#endif
+ 
++    /*
+     if (run->global->exe.clearEnv) {
+         environ = NULL;
+     }
+@@ -275,13 +278,16 @@ static bool subproc_PrepareExecv(run_t* run) {
+     if (run->global->exe.netDriver) {
+         setenv(_HF_THREAD_NETDRIVER_ENV, "1", 1);
+     }
++    */
+ 
+     /* Make sure it's a new process group / session, so waitpid can wait for -(run->pid) */
+-    setsid();
++    //setsid();
+ 
++#if 0
+     util_closeStdio(/* close_stdin= */ run->global->exe.nullifyStdio,
+         /* close_stdout= */ run->global->exe.nullifyStdio,
+         /* close_stderr= */ run->global->exe.nullifyStdio);
++#endif
+ 
+     /* The coverage bitmap/feedback structure */
+     if (TEMP_FAILURE_RETRY(dup2(run->global->feedback.covFeedbackFd, _HF_COV_BITMAP_FD)) == -1) {
+@@ -307,17 +313,18 @@ static bool subproc_PrepareExecv(run_t* run) {
+     /* Do not try to handle input files with socketfuzzer */
+     if (!run->global->socketFuzzer.enabled) {
+         /* The input file to _HF_INPUT_FD */
+-        if (TEMP_FAILURE_RETRY(dup2(run->dynfile->fd, _HF_INPUT_FD)) == -1) {
++        // Now done in the target process
++        /*if (TEMP_FAILURE_RETRY(dup2(run->dynfile->fd, _HF_INPUT_FD)) == -1) {
+             PLOG_E("dup2('%d', _HF_INPUT_FD='%d')", run->dynfile->fd, _HF_INPUT_FD);
+             return false;
+-        }
+-        if (lseek(_HF_INPUT_FD, 0, SEEK_SET) == (off_t)-1) {
++        }*/
++        /*if (lseek(run->dynfile->fd, 0, SEEK_SET) == (off_t)-1) {
+             PLOG_E("lseek(_HF_INPUT_FD=%d, 0, SEEK_SET)", _HF_INPUT_FD);
+             return false;
+-        }
+-        if (run->global->exe.fuzzStdin &&
+-            TEMP_FAILURE_RETRY(dup2(run->dynfile->fd, STDIN_FILENO)) == -1) {
+-            PLOG_E("dup2(_HF_INPUT_FD=%d, STDIN_FILENO=%d)", run->dynfile->fd, STDIN_FILENO);
++        }*/
++        if (run->global->exe.fuzzStdin) { // &&
++            //TEMP_FAILURE_RETRY(dup2(run->dynfile->fd, STDIN_FILENO)) == -1) {
++            //PLOG_E("dup2(_HF_INPUT_FD=%d, STDIN_FILENO=%d)", run->dynfile->fd, STDIN_FILENO);
+             return false;
+         }
+     }
+@@ -333,11 +340,11 @@ static bool subproc_PrepareExecv(run_t* run) {
+         setenv(_HF_LOG_LEVEL_ENV, llstr, 1);
+     }
+ 
+-    sigset_t sset;
++    /*sigset_t sset;
+     sigemptyset(&sset);
+     if (sigprocmask(SIG_SETMASK, &sset, NULL) == -1) {
+         PLOG_W("sigprocmask(empty_set)");
+-    }
++    }*/
+ 
+     subproc_prepareExecvArgs(run);
+     return true;
+@@ -367,6 +374,13 @@ static bool subproc_New(run_t* run) {
+ 
+     LOG_D("Forking new process for thread: %" PRId32, run->fuzzNo);
+ 
++    if (!subproc_PrepareExecv(run)) {
++        LOG_E("subproc_PrepareExecv() failed");
++        exit(EXIT_FAILURE);
++    }
++    run->pid = arch_spawn(run, sv);
++
++#if 0
+     run->pid = arch_fork(run);
+     if (run->pid == -1) {
+         PLOG_E("Couldn't fork");
+@@ -413,6 +427,7 @@ static bool subproc_New(run_t* run) {
+         }
+         abort();
+     }
++#endif
+ 
+     /* Parent */
+     LOG_D("Launched new process, pid=%d, thread: %" PRId32 " (concurrency: %zd)", (int)run->pid,
+diff --git a/target/Makefile b/target/Makefile
+new file mode 100644
+index 00000000..1ecc3aea
+--- /dev/null
++++ b/target/Makefile
+@@ -0,0 +1,15 @@
++all : main interpose.dylib
++
++interpose.dylib : interpose.c
++	clang interpose.c -arch arm64 -o interpose.dylib -shared -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk
++
++main : main.cpp interpose.dylib ../libhfuzz/instrument.c ../libhfuzz/fetch.c ../libhfuzz/persistent.c hfinit.c
++	clang -O3 ../libhfuzz/fetch.c ../libhfuzz/instrument.c ../libhfuzz/memorycmp.c ../libhfuzz/performance.c ../libhfuzz/persistent.c ../libhfcommon/files.c ../libhfcommon/log.c ../libhfcommon/util.c ../libhfcommon/ns.c -c -I.. -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk -D_HF_ARCH_DARWIN
++	clang -O3 hfinit.c -c -I.. -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk -D_HF_ARCH_DARWIN
++	# Can link against 3rd party frameworks here with `-F $(PWD)/Frameworks -framework $NAME_OF_FRAMEWORK -Wl,-rpath,$(PWD)/Frameworks`
++	clang++ -O3 main.cpp -arch arm64 -I.. -std=c++17 -o main -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk interpose.dylib fetch.o files.o instrument.o log.o memorycmp.o ns.o performance.o persistent.o util.o hfinit.o
++
++runner : runner.c entitlements.xml
++	clang runner.c -o runner
++	# Replace this identity, find available certificates usign `security find-identity`
++	codesign -s "XXXXXXXXXX" --entitlements entitlements.xml --force runner
+diff --git a/target/hfinit.c b/target/hfinit.c
+new file mode 100644
+index 00000000..82801596
+--- /dev/null
++++ b/target/hfinit.c
+@@ -0,0 +1,81 @@
++#include <stdlib.h>
++#include <stdio.h>
++#include <unistd.h>
++#include <sys/errno.h>
++
++#include <mach/mach_init.h>
++#include <mach/task_info.h>
++#include <mach/task.h>
++#include <mach/task_special_ports.h>
++#include <mach/vm_page_size.h>
++
++#include <honggfuzz.h>
++#include <libhfcommon/common.h>
++#include <libhfcommon/util.h>
++#include <libhfcommon/log.h>
++
++// From bootstrap.h
++#define	BOOTSTRAP_MAX_NAME_LEN 128
++typedef char name_t[BOOTSTRAP_MAX_NAME_LEN];
++typedef name_t *name_array_t;
++extern kern_return_t
++bootstrap_look_up(mach_port_t bp, const name_t service_name, mach_port_t *sp);
++
++
++extern void init_hf_fetch();
++
++bool hf_init() {
++    /*
++     * Get child's bootstrap port.
++     */
++    mach_port_t child_bootstrap = MACH_PORT_NULL;
++    if (task_get_bootstrap_port(mach_task_self(), &child_bootstrap) != KERN_SUCCESS) {
++        return false;
++    }
++
++    /*
++     * Get exception port.
++     */
++    mach_port_t exception_port = MACH_PORT_NULL;
++
++    const char* service_name = getenv("HF_SERVICE_NAME");
++
++    if (bootstrap_look_up(child_bootstrap, service_name, &exception_port) != KERN_SUCCESS) {
++        return false;
++    }
++
++    /*
++     * Here we register the exception port in the child
++     */
++    if (task_set_exception_ports(mach_task_self(), EXC_MASK_CRASH, exception_port,
++            EXCEPTION_STATE_IDENTITY | MACH_EXCEPTION_CODES,
++            MACHINE_THREAD_STATE) != KERN_SUCCESS) {
++        return false;
++    }
++
++    int sv[2];
++    sv[0] = atol(getenv("HF_SV_0"));
++    sv[1] = atol(getenv("HF_SV_1"));
++    if (TEMP_FAILURE_RETRY(dup2(sv[1], _HF_PERSISTENT_FD)) == -1) {
++        PLOG_F("dup2('%d', '%d')", sv[1], _HF_PERSISTENT_FD);
++    }
++    if (close(sv[0]) < 0) {
++        LOG_F("close failed");
++    }
++    if (close(sv[1]) < 0) {
++        LOG_F("close failed");
++    }
++
++    int input_fd = atol(getenv("HF_INPUT_FD"));
++    if (TEMP_FAILURE_RETRY(dup2(input_fd, _HF_INPUT_FD)) == -1) {
++        PLOG_F("dup2('%d', _HF_INPUT_FD='%d')", input_fd, _HF_INPUT_FD);
++    }
++    if (lseek(_HF_INPUT_FD, 0, SEEK_SET) == (off_t)-1) {
++        PLOG_F("lseek(_HF_INPUT_FD=%d, 0, SEEK_SET)", _HF_INPUT_FD);
++    }
++
++    init_hf_fetch();
++
++    return true;
++}
++
+diff --git a/target/hfinit.h b/target/hfinit.h
+new file mode 100644
+index 00000000..c468e53b
+--- /dev/null
++++ b/target/hfinit.h
+@@ -0,0 +1,6 @@
++#ifndef HF_INIT_H
++#define HF_INIT_H
++
++extern "C" bool hf_init();
++
++#endif
+diff --git a/target/interpose.c b/target/interpose.c
+new file mode 100644
+index 00000000..a7e05fbf
+--- /dev/null
++++ b/target/interpose.c
+@@ -0,0 +1,41 @@
++// clang interpose.c -arch arm64 -o interpose.dylib -shared -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk
++
++#include <stdio.h>
++#include <unistd.h>
++
++typedef void* xpc_object_t;
++
++extern xpc_object_t xpc_dictionary_create(void*, void*, int);
++extern void xpc_dictionary_set_value(xpc_object_t, const char*, xpc_object_t);
++extern xpc_object_t xpc_bool_create(int);
++extern xpc_object_t xpc_copy_entitlements_for_self();
++
++// From https://opensource.apple.com/source/dyld/dyld-97.1/include/mach-o/dyld-interposing.h.auto.html
++/*
++ *  Example:
++ *
++ *  static
++ *  int
++ *  my_open(const char* path, int flags, mode_t mode)
++ *  {
++ *    int value;
++ *    // do stuff before open (including changing the arguments)
++ *    value = open(path, flags, mode);
++ *    // do stuff after open (including changing the return value(s))
++ *    return value;
++ *  }
++ *  DYLD_INTERPOSE(my_open, open)
++ */
++
++#define DYLD_INTERPOSE(_replacment,_replacee) \
++   __attribute__((used)) static struct{ const void* replacment; const void* replacee; } _interpose_##_replacee \
++            __attribute__ ((section ("__DATA,__interpose"))) = { (const void*)(unsigned long)&_replacment, (const void*)(unsigned long)&_replacee };
++
++xpc_object_t my_xpc_copy_entitlements_for_self() {
++    puts("[*] Faking com.apple.private.security.no-sandbox entitlement in interposed xpc_copy_entitlements_for_self");
++    xpc_object_t dict = xpc_dictionary_create(NULL, NULL, 0);
++    xpc_dictionary_set_value(dict, "com.apple.private.security.no-sandbox", xpc_bool_create(1));
++    return dict;
++}
++
++DYLD_INTERPOSE(my_xpc_copy_entitlements_for_self, xpc_copy_entitlements_for_self);
+diff --git a/target/main.cpp b/target/main.cpp
+new file mode 100644
+index 00000000..964654ea
+--- /dev/null
++++ b/target/main.cpp
+@@ -0,0 +1,39 @@
++#include <stdio.h>
++#include <signal.h>
++#include <unistd.h>
++#include <fcntl.h>
++#include <string.h>
++#include <sys/mman.h>
++
++#include <iostream>
++#include <vector>
++#include <filesystem>
++
++#include <libhfuzz/instrument.h>
++
++#include "hfinit.h"
++
++extern "C" void initializeTrapfuzz();
++extern "C" void HF_ITER(uint8_t** buf, size_t* len);
++
++
++void fuzz() {
++    size_t len;
++    uint8_t* buf;
++
++    for (int i = 0; i < 1000000; i++) {
++        HF_ITER(&buf, &len);
++
++        // Do something here
++    }
++}
++
++int main() {
++    if (!hf_init()) {
++        printf("hf_init failed\n");
++        return -1;
++    }
++    initializeTrapfuzz();
++    fuzz();
++    return 0;
++}
