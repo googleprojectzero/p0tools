@@ -45,9 +45,30 @@ into the `build/` directory.
    process for the purposes of building a separate target binary that will call and start the
    WebKit processes.
 
-4. Run the fuzzer binary from the build directory (`build/`) with the following command. The sample can either be a path to a file or a URL beginning with `http` or `https`.
+4. Run the fuzzer binary from the build directory (`build/`) with the following command. The sample can either be a path to a file or a URL beginning with `http` or `https`. If you don't set a `log_path`, then the crash will instead print to stdout.
 ```
    ASAN_OPTIONS=detect_leaks=0,exitcode=42,log_path=asan_logs/crash ASAN_SYMBOLIZER_PATH=</path/to/llvm-symbolizer> LD_LIBRARY_PATH=lib/ ./bin/webkitfuzz </path/to/sample> <timeout in sec>
+```
+## Debugging with GDB
+
+To debug the WebKit Web Process with gdb you can use `gdbserver`. Run webkitfuzz
+with the following command. I suggest using a long timeout, like 3600s or 1 hr,
+to ensure you have enough time to debug.
+```
+WEB_PROCESS_CMD_PREFIX='/usr/bin/gdbserver localhost:8080' ASAN_OPTIONS=detect_leaks=0,exitcode=42 LD_LIBRARY_PATH=lib/ ./bin/webkitfuzz http://poc.com 3600
+```
+From another terminal, you'll connect to the gdbserver as:
+```
+$ gdb bin/WebKitWebProcess
+(gdb) target remote localhost:8081
+```
+
+If you're running on the same machine, then I suggest also running the following
+to save *a lot* of time. This will tell gdb that it doesn't have to send the
+symbols from the server to the client, but actually you can find them locally at
+this path.
+```
+(gdb) set sysroot /
 ```
 
 ## Other Tips and Tricks
