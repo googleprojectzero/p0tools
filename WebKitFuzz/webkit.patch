@@ -1,6 +1,7 @@
-diff -ruN webkitgtk-2.20.2-original/Source/WebCore/page/DOMWindow.cpp webkitgtk-2.20.2-patched/Source/WebCore/page/DOMWindow.cpp
---- webkitgtk-2.20.2-original/Source/WebCore/page/DOMWindow.cpp	2018-02-19 03:04:38.000000000 -0800
-+++ webkitgtk-2.20.2-patched/Source/WebCore/page/DOMWindow.cpp	2018-06-07 08:48:13.506202000 -0700
+diff --git a/Source/WebCore/page/DOMWindow.cpp b/Source/WebCore/page/DOMWindow.cpp
+index 546b4a4ddeeb..13852bcb263f 100644
+--- a/Source/WebCore/page/DOMWindow.cpp
++++ b/Source/WebCore/page/DOMWindow.cpp
 @@ -27,6 +27,8 @@
  #include "config.h"
  #include "DOMWindow.h"
@@ -10,68 +11,45 @@ diff -ruN webkitgtk-2.20.2-original/Source/WebCore/page/DOMWindow.cpp webkitgtk-
  #include "BackForwardController.h"
  #include "BarProp.h"
  #include "CSSComputedStyleDeclaration.h"
-@@ -1129,6 +1131,9 @@
+@@ -1122,6 +1124,9 @@ void DOMWindow::stop()
  
  void DOMWindow::alert(const String& message)
  {
 +    WebCore::GCController::singleton().garbageCollectNow();
 +    return;
 +
-     if (!m_frame)
+     RefPtr frame = this->frame();
+     if (!frame)
          return;
- 
-diff -ruN webkitgtk-2.20.2-original/Source/WebKit/PlatformGTK.cmake webkitgtk-2.20.2-patched/Source/WebKit/PlatformGTK.cmake
---- webkitgtk-2.20.2-original/Source/WebKit/PlatformGTK.cmake	2018-04-10 00:33:13.000000000 -0700
-+++ webkitgtk-2.20.2-patched/Source/WebKit/PlatformGTK.cmake	2018-08-30 04:41:59.686417149 -0700
-@@ -732,7 +732,7 @@
-         OUTPUT ${CMAKE_BINARY_DIR}/WebKit2-${WEBKITGTK_API_VERSION}.gir
-         DEPENDS WebKit
-         DEPENDS ${CMAKE_BINARY_DIR}/JavaScriptCore-${WEBKITGTK_API_VERSION}.gir
--        COMMAND CC=${CMAKE_C_COMPILER} CFLAGS=-Wno-deprecated-declarations LDFLAGS=
-+        COMMAND CC=${CMAKE_C_COMPILER} CFLAGS=\"-Wno-deprecated-declarations -fsanitize=address\" LDFLAGS=\"-fsanitize=address\"
-             ${LOADER_LIBRARY_PATH_VAR}="${INTROSPECTION_ADDITIONAL_LIBRARY_PATH}"
-             ${INTROSPECTION_SCANNER}
-             --quiet
-@@ -774,8 +774,8 @@
-         OUTPUT ${CMAKE_BINARY_DIR}/WebKit2WebExtension-${WEBKITGTK_API_VERSION}.gir
-         DEPENDS ${CMAKE_BINARY_DIR}/JavaScriptCore-${WEBKITGTK_API_VERSION}.gir
-         DEPENDS ${CMAKE_BINARY_DIR}/WebKit2-${WEBKITGTK_API_VERSION}.gir
--        COMMAND CC=${CMAKE_C_COMPILER} CFLAGS=-Wno-deprecated-declarations
--            LDFLAGS="${INTROSPECTION_ADDITIONAL_LDFLAGS}"
-+        COMMAND CC=${CMAKE_C_COMPILER} CFLAGS=\"-Wno-deprecated-declarations -fsanitize=address\"
-+            LDFLAGS=\"${INTROSPECTION_ADDITIONAL_LDFLAGS} -fsanitize=address\"
-             ${LOADER_LIBRARY_PATH_VAR}="${INTROSPECTION_ADDITIONAL_LIBRARY_PATH}"
-             ${INTROSPECTION_SCANNER}
-             --quiet
-diff -ruN webkitgtk-2.20.2-original/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp webkitgtk-2.20.2-patched/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp
---- webkitgtk-2.20.2-original/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp	2018-02-19 22:53:53.000000000 -0800
-+++ webkitgtk-2.20.2-patched/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp	2018-06-07 08:56:57.436930000 -0700
-@@ -40,6 +40,9 @@
+diff --git a/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp b/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp
+index 124bfc3f16e8..137ae153100c 100644
+--- a/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp
++++ b/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp
+@@ -41,6 +41,8 @@
+ #include <wtf/glib/Sandbox.h>
  #include <wtf/text/CString.h>
  #include <wtf/text/WTFString.h>
- 
 +#include <sys/types.h>
 +#include <sys/wait.h>
-+
- #if PLATFORM(WPE)
- #include <wpe/renderer-host.h>
+ 
+ #if !USE(SYSTEM_MALLOC) && OS(LINUX)
+ #include <bmalloc/valgrind.h>
+@@ -68,6 +70,151 @@ static bool isFlatpakSpawnUsable()
+ }
  #endif
-@@ -47,6 +50,149 @@
- namespace WebKit {
- using namespace WebCore;
  
 +void HandleAsanReport(pid_t pid) {
 +  // 1. Get the "log_path" from ASAN_OPTIONS.
 +  // 2. Copy the log_path.[pid] to log_path.[mypid].
 +  char *options = getenv("ASAN_OPTIONS");
 +  if (options == NULL) {
-+    fprintf(stdout, "error: no ASAN_OPTIONS\n");
++    fprintf(stdout, "[webkitfuzz]: error: no ASAN_OPTIONS\n");
 +    return;
 +  }
 +
 +  char *log_path = strstr(options, "log_path=");
 +  if (log_path == NULL) {
-+    fprintf(stdout, "error: no log_path=\n");
++    fprintf(stdout, "[webkitfuzz]: error: no ASAN log_path=\n");
 +    return;
 +  }
 +
@@ -102,7 +80,7 @@ diff -ruN webkitgtk-2.20.2-original/Source/WebKit/UIProcess/Launcher/glib/Proces
 +
 +  free(log_path);
 +
-+  FILE *f_src = fopen(src_path, "rb");
++    FILE *f_src = fopen(src_path, "rb");
 +  if (f_src == NULL) {
 +    fprintf(stdout, "error: %s not found\n", src_path);
 +    return;
@@ -128,31 +106,31 @@ diff -ruN webkitgtk-2.20.2-original/Source/WebKit/UIProcess/Launcher/glib/Proces
 +
 +  fclose(f_dst);
 +  fclose(f_src);
-+  fprintf(stdout, "note: ASAN logs copied from %s to %s\n",
++  fprintf(stdout, "[webkitfuzz]: note: ASAN logs copied from %s to %s\n",
 +          src_path, dst_path);
 +  free(src_path);
 +  free(dst_path);
 +}
 +
 +void *wait_thread(void *arg) {
-+  fprintf(stdout, "Started WebProcess, starting monitoring thread.\n");
++  fprintf(stdout, "[webkitfuzz]: Started WebProcess, starting monitoring thread.\n");
 +
 +  pid_t pid = (pid_t)(size_t)arg;
 +
-+  fprintf(stdout, "pid: %i\n", pid);
++  fprintf(stdout, "[webkitfuzz]: pid: %i\n", pid);
 +
 +  for (;;) {
 +    int status = 0;
 +    pid_t ev_pid = waitpid(pid, &status, __WALL);
 +
-+    fprintf(stdout, "ev_pid: %i, status: %.8x\n", ev_pid, status);
++    fprintf(stdout, "[webkitfuzz]: ev_pid: %i, status: %.8x\n", ev_pid, status);
 +
 +    if (ev_pid == -1) {
 +      if (errno == ECHILD) {
-+        fprintf(stdout, "all children exited\n");
++        fprintf(stdout, "[webkitfuzz]: all children exited\n");
 +        return NULL;
 +      }
-+      fprintf(stdout, "errno: %i\n", errno);
++      fprintf(stdout, "[webkitfuzz]: errno: %i\n", errno);
 +      perror("error");
 +      return NULL;
 +    }
@@ -203,48 +181,39 @@ diff -ruN webkitgtk-2.20.2-original/Source/WebKit/UIProcess/Launcher/glib/Proces
 +  return NULL;
 +}
 +
- static void childSetupFunction(gpointer userData)
- {
-     int socket = GPOINTER_TO_INT(userData);
-@@ -138,8 +284,20 @@
-     argv[i++] = nullptr;
- 
-     GUniqueOutPtr<GError> error;
--    if (!g_spawn_async(nullptr, argv, nullptr, G_SPAWN_LEAVE_DESCRIPTORS_OPEN, childSetupFunction, GINT_TO_POINTER(socketPair.server), &pid, &error.outPtr()))
--        g_error("Unable to fork a new child process: %s", error->message);
 +
-+    if(m_launchOptions.processType == ProcessLauncher::ProcessType::Web) {
-+      if (!g_spawn_async(nullptr, argv, nullptr, GSpawnFlags(G_SPAWN_LEAVE_DESCRIPTORS_OPEN | G_SPAWN_DO_NOT_REAP_CHILD), childSetupFunction, GINT_TO_POINTER(socketPair.server), &pid, &error.outPtr())) {
-+          g_printerr("Unable to fork a new WebProcess: %s.\n", error->message);
-+          ASSERT_NOT_REACHED();
-+      }
-+      pthread_t thread_id;
-+      pthread_create(&thread_id, NULL, wait_thread, (void *)pid);
-+    } else {
-+      if (!g_spawn_async(nullptr, argv, nullptr, G_SPAWN_LEAVE_DESCRIPTORS_OPEN, childSetupFunction, GINT_TO_POINTER(socketPair.server), &pid, &error.outPtr())) {
-+          g_printerr("Unable to fork a new WebProcess: %s.\n", error->message);
-+          ASSERT_NOT_REACHED();
-+      }
-+    }
++
+ void ProcessLauncher::launchProcess()
+ {
+     IPC::Connection::SocketPair socketPair = IPC::Connection::createPlatformConnection(IPC::Connection::ConnectionOptions::SetCloexecOnServer);
+@@ -170,6 +317,12 @@ void ProcessLauncher::launchProcess()
+     m_processIdentifier = g_ascii_strtoll(processIdStr, nullptr, 0);
+     RELEASE_ASSERT(m_processIdentifier);
  
++    pthread_t thread_id;
++    int retval = pthread_create(&thread_id, NULL, wait_thread, (void *)m_processIdentifier);
++    if (retval != 0) {
++      g_error("[webkitfuzz]: pthread_create failed\n");
++    }
++
      // Don't expose the parent socket to potential future children.
      if (!setCloseOnExec(socketPair.client))
-diff -ruN webkitgtk-2.20.2-original/Tools/CMakeLists.txt webkitgtk-2.20.2-patched/Tools/CMakeLists.txt
---- webkitgtk-2.20.2-original/Tools/CMakeLists.txt	2018-02-18 23:45:33.000000000 -0800
-+++ webkitgtk-2.20.2-patched/Tools/CMakeLists.txt	2018-06-07 08:57:57.872532000 -0700
-@@ -15,6 +15,9 @@
-     if (ENABLE_MINIBROWSER)
-         add_subdirectory(MiniBrowser/gtk)
-     endif ()
+         RELEASE_ASSERT_NOT_REACHED();
+diff --git a/Tools/PlatformGTK.cmake b/Tools/PlatformGTK.cmake
+index 37e1b0b7138d..5b9579597912 100644
+--- a/Tools/PlatformGTK.cmake
++++ b/Tools/PlatformGTK.cmake
+@@ -12,3 +12,5 @@ endif ()
+ if (ENABLE_MINIBROWSER)
+   add_subdirectory(MiniBrowser/gtk)
+ endif ()
 +
-+    add_subdirectory(webkitfuzz)
-+
- elseif ("${PORT}" STREQUAL "Mac")
-     add_subdirectory(DumpRenderTree)
-     add_subdirectory(WebKitTestRunner)
-diff -ruN webkitgtk-2.20.2-original/Tools/webkitfuzz/CMakeLists.txt webkitgtk-2.20.2-patched/Tools/webkitfuzz/CMakeLists.txt
---- webkitgtk-2.20.2-original/Tools/webkitfuzz/CMakeLists.txt	1969-12-31 16:00:00.000000000 -0800
-+++ webkitgtk-2.20.2-patched/Tools/webkitfuzz/CMakeLists.txt	2017-12-13 06:42:56.968691000 -0800
++add_subdirectory(webkitfuzz)
+diff --git a/Tools/webkitfuzz/CMakeLists.txt b/Tools/webkitfuzz/CMakeLists.txt
+new file mode 100644
+index 000000000000..d71e14610257
+--- /dev/null
++++ b/Tools/webkitfuzz/CMakeLists.txt
 @@ -0,0 +1,40 @@
 +set(WEBKITFUZZ_DIR "${TOOLS_DIR}/webkitfuzz")
 +
@@ -286,10 +255,12 @@ diff -ruN webkitgtk-2.20.2-original/Tools/webkitfuzz/CMakeLists.txt webkitgtk-2.
 +target_link_libraries(webkitfuzz ${webkitfuzz_LIBRARIES})
 +
 +install(TARGETS webkitfuzz DESTINATION "${LIBEXEC_INSTALL_DIR}")
-diff -ruN webkitgtk-2.20.2-original/Tools/webkitfuzz/main.c webkitgtk-2.20.2-patched/Tools/webkitfuzz/main.c
---- webkitgtk-2.20.2-original/Tools/webkitfuzz/main.c	1969-12-31 16:00:00.000000000 -0800
-+++ webkitgtk-2.20.2-patched/Tools/webkitfuzz/main.c	2018-08-30 04:48:22.833020025 -0700
-@@ -0,0 +1,122 @@
+diff --git a/Tools/webkitfuzz/main.c b/Tools/webkitfuzz/main.c
+new file mode 100644
+index 000000000000..a02da70dd451
+--- /dev/null
++++ b/Tools/webkitfuzz/main.c
+@@ -0,0 +1,125 @@
 +#include <gtk/gtk.h>
 +#include <webkit2/webkit2.h>
 +
@@ -318,7 +289,7 @@ diff -ruN webkitgtk-2.20.2-original/Tools/webkitfuzz/main.c webkitgtk-2.20.2-pat
 +int main(int argc, char* argv[])
 +{
 +    int inputtype = TYPE_FILE;
-+    char *databuf; 
++    char *databuf;
 +
 +    if(argc < 2) {
 +        printf("Usage: %s <url|file> [timeout]\n", argv[0]);
@@ -332,10 +303,7 @@ diff -ruN webkitgtk-2.20.2-original/Tools/webkitfuzz/main.c webkitgtk-2.20.2-pat
 +        timeout = TIMEOUT;
 +    }
 +
-+    //pthread_t thread_id;
-+    //pthread_create(&thread_id, NULL, wait_thread, NULL);
-+
-+    printf("webkitfuzz started\n");
++    printf("webkitfuzz started: %s\n",argv[1]);
 +
 +    if((strncmp(argv[1],"http://", 7) == 0) || (strncmp(argv[1],"https://", 8) == 0)) {
 +        inputtype = TYPE_URL;
@@ -358,7 +326,6 @@ diff -ruN webkitgtk-2.20.2-original/Tools/webkitfuzz/main.c webkitgtk-2.20.2-pat
 +    // Initialize GTK+
 +    gtk_init(&argc, &argv);
 +
-+    webkit_web_context_set_process_model(webkit_web_context_get_default(), WEBKIT_PROCESS_MODEL_SHARED_SECONDARY_PROCESS);
 +
 +    // Create an 800x600 window that will contain the browser instance
 +    GtkWidget *main_window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
@@ -367,6 +334,13 @@ diff -ruN webkitgtk-2.20.2-original/Tools/webkitfuzz/main.c webkitgtk-2.20.2-pat
 +
 +    // Create a browser instance
 +    WebKitWebView *webView = WEBKIT_WEB_VIEW(webkit_web_view_new());
++
++    // Set settings for console messages to be written to stdout
++    WebKitSettings *settings = webkit_web_view_get_settings(webView);
++    webkit_settings_set_enable_write_console_messages_to_stdout(settings, TRUE);
++
++    // Enable or disable WebGL
++    //webkit_settings_set_enable_webgl(settings, FALSE);
 +
 +    // Put the browser area into the main window
 +    gtk_container_add(GTK_CONTAINER(main_window), GTK_WIDGET(webView));
