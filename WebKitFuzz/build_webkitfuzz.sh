@@ -53,6 +53,7 @@ cmake -DCMAKE_BUILD_TYPE=Release -DPORT=GTK -G "Unix Makefiles" \
   -DUSE_JPEGXL=OFF \
   -DENABLE_THUNDER=OFF \
   -DENABLE_JOURNALD_LOG=OFF \
+  -DUSE_SYSTEM_MALLOC=ON \
   ..
 
 # Calling make with <num cores>*2. Change based on your machine
