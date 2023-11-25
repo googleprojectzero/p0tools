@@ -1,5 +1,3 @@
-// clang interpose.c -arch arm64 -o interpose.dylib -shared -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk
-
 #include <stdio.h>
 #include <unistd.h>
 
