@@ -1,0 +1,23 @@
+# Windows Kernel allows the creation of stable subkeys under volatile keys via registry transactions
+
+There are two types of keys in the Windows registry: stable and volatile. Stable keys are saved to the hive file and persistent across hive reloads/system reboots, while volatile keys are in-memory only and disappear as soon as the hive gets unloaded. Stable keys may have both stable/volatile subkeys, but volatile keys may only have volatile subkeys; having stable subkeys under volatile keys wouldn't make sense as they would become unreachable on the next reboot anyway. For this reason, an attempt to create a stable subkey under a volatile key is typically caught in the internal `CmpCreateChild` kernel function and denied with the `STATUS_CHILD_MUST_BE_VOLATILE` error code. In October 2022, we found and reported a way to bypass this enforcement through registry virtualization (issue #2375), which was then fixed in the January 2023 Patch Tuesday as CVE-2023-21748. This report discusses another way to achieve this, by abusing registry transactions. The pseudocode of the relevant check in `CmpCreateChild` is as follows:
+
+```c
+if ((ParentKcb->KeyCell & 0x80000000) != 0 &&
+    (Context->CreateOptions & REG_OPTION_VOLATILE) == 0 &&
+    (!Trans || !ParentKcb->TransKCBOwner) ) {
+  return STATUS_CHILD_MUST_BE_VOLATILE;
+}
+```
+
+The first and second conditions are instinctive as they simply check for attempts to create a stable key under a volatile parent. But the third condition indicates that the check is not effective if both the parent and the subkey are created transactionally. The reason for this behavior is not immediately obvious to us, but indeed, testing shows that it is possible to create such a key structure transactionally, and upon committing the transaction, it becomes persistent and globally visible. This is demonstrated by the attached proof-of-concept exploit (`TransStableUnderVolatileKeys`), which has been successfully tested on Windows 11 22H2 (November 2023 update, build 22621.2715). It first creates a volatile key at `HKCU\Volatile` and then a stable one underneath it at `HKCU\Volatile\Stable`.
+
+The security impact of this issue is equivalent to the same problem reported in issue #2375, which is to say, it's not entirely clear. One direct consequence is a hive-based memory leak: after a reload/reboot, a stable key with a volatile parent becomes inaccessible, but all of the related cells (key node, class, values, descendent keys) remain allocated and take up space in the hive, at least until it is subject to reorganization. But perhaps the more interesting side-effects have to do with security descriptors, and the following elements of the registry design:
+
+- All stable security descriptors in the hive are connected in a doubly-linked list via `_CM_KEY_SECURITY.Flink/Blink`.
+- All volatile security descriptors reside in isolated single-item linked lists (`Flink`/`Blink` point to themselves), because they are ephemeral and don't need to be tracked.
+- New stable security descriptors are inserted into the list based on the security descriptor of the key's parent.
+
+As a result, by creating a stable key with a unique security descriptor under a volatile key, we would be adding that security descriptor to the wrong list. Furthermore, if any other stable keys are later set to use the same SD, then after a reload/reboot, the descriptors of these keys would be considered invalid (because they aren't found in the global stable list) and would be reset to the parent's security descriptor in `CmpCheckKey`. But the parent's descriptor might have some properties that a normal user doesn't normally have the rights to set, such as a privileged owner or a non-empty system access control list (SACL). For example, the `HKLM\Software\Microsoft\DRM` key is owned by SYSTEM and allows unprivileged users to create subkeys inside, so one could abuse the bug to have the subkeys inherit DRM's security descriptor and become owned by SYSTEM too, even though setting it directly would normally not be permitted. We leave it up to MSRC to decide if this warrants a fix as part of a security bulletin and/or if this behavior has any other, more severe security implications.
+
+This report outlines findings that fall outside of Project Zero's standard 90-day disclosure policy due to their unclear or low security impact. While we strive to assess security issues accurately, if you suspect anything in this report poses a significant risk, please contact us immediately to request a 90-day disclosure deadline. Please note that reports without a disclosure deadline may be discussed or referenced publicly in the future. We will make an effort to inform you in advance if this occurs.
