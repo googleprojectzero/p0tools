@@ -1,0 +1,20 @@
+diff --git a/tinyinstinstrumentation.cpp b/tinyinstinstrumentation.cpp
+index ee9ea5e..a0ed658 100644
+--- a/tinyinstinstrumentation.cpp
++++ b/tinyinstinstrumentation.cpp
+@@ -18,13 +18,13 @@ limitations under the License.
+ 
+ #include "common.h"
+ #include "tinyinstinstrumentation.h"
+-#include "litecov.h"
++#include "avdinst.h"
+ 
+ #include <sstream>
+ 
+ 
+ void TinyInstInstrumentation::Init(int argc, char **argv) {
+-  instrumentation = new LiteCov();
++  instrumentation = new AVDInst();
+   instrumentation->Init(argc, argv);
+ 
+   persist = GetBinaryOption("-persist", argc, argv, false);

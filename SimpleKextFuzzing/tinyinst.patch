@@ -1,0 +1,40 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 3c7c33b..b6b78cb 100755
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -68,6 +68,8 @@ set (cross_platform_files
+      unwind.h
+      hook.cpp
+      hook.h
++     avdinst.cpp
++     avdinst.h
+ )
+ 
+ if (WIN32)
+diff --git a/tinyinst-coverage.cpp b/tinyinst-coverage.cpp
+index eac3fcf..21c1d26 100755
+--- a/tinyinst-coverage.cpp
++++ b/tinyinst-coverage.cpp
+@@ -21,11 +21,11 @@ limitations under the License.
+ #include <stdbool.h>
+ 
+ #include "common.h"
+-#include "litecov.h"
++#include "avdinst.h"
+ 
+ uint8_t *trace_bits;
+ 
+-LiteCov *instrumentation;
++AVDInst *instrumentation;
+ bool persist;
+ int num_iterations;
+ int cur_iteration;
+@@ -126,7 +126,7 @@ void RunTarget(int argc, char **argv, unsigned int pid, uint32_t timeout) {
+ 
+ int main(int argc, char **argv)
+ {
+-  instrumentation = new LiteCov();
++  instrumentation = new AVDInst();
+   instrumentation->Init(argc, argv);
+ 
+   int target_opt_ind = 0;
