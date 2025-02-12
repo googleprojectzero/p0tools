@@ -38,7 +38,7 @@ void instrument(pid_t pid) {
     }
 
     printf("[*] _amfi_check_dyld_policy_self at offset 0x%x in /usr/lib/dyld\n", patch_offset);
-   
+
     // Attach to the target process
     kr = task_for_pid(mach_task_self(), pid, &task);
     if (kr != KERN_SUCCESS) {
@@ -105,7 +105,7 @@ void instrument(pid_t pid) {
         printf("vm_protect failed\n");
         return;
     }
-    
+
     // MOV X8, 0x5f
     // STR X8, [X1]
     // RET
@@ -124,7 +124,7 @@ void instrument(pid_t pid) {
     }
 
     puts("[+] Sucessfully patched _amfi_check_dyld_policy_self");
-} 
+}
 
 int run(const char* binary) {
     pid_t pid;
@@ -151,6 +151,7 @@ int run(const char* binary) {
 
     // Can be useful for fuzzing
     //setenv("DYLD_INSERT_LIBRARIES", "/usr/lib/libgmalloc.dylib", 1);
+    setenv("DYLD_IN_CACHE", "0", 1);
 
     char* argv[] = {(char*)binary, NULL};
     rv = posix_spawn(&pid, binary, NULL, &attr, argv, environ);
@@ -160,6 +161,7 @@ int run(const char* binary) {
     }
 
     unsetenv("DYLD_INSERT_LIBRARIES");
+    unsetenv("DYLD_IN_CACHE");
 
     printf("[+] Child process created with pid: %i\n", pid);
 
