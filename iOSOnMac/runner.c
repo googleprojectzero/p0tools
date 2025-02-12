@@ -152,6 +152,7 @@ int run(const char* binary) {
     // Can be useful for fuzzing
     //setenv("DYLD_INSERT_LIBRARIES", "/usr/lib/libgmalloc.dylib", 1);
     setenv("DYLD_IN_CACHE", "0", 1);
+    setenv("DYLD_INSERT_LIBRARIES", "interpose.dylib", 1);
 
     char* argv[] = {(char*)binary, NULL};
     rv = posix_spawn(&pid, binary, NULL, &attr, argv, environ);
