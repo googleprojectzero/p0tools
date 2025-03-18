@@ -1,8 +1,13 @@
 # Microsoft Windows Registry Low/Unclear Severity Bugs
 
-This repository contains the descriptions and proof-of-concept exploits of 20 issues with low or unclear security impact found in the Windows Registry. They were reported to Microsoft between November 2023 and January 2024. Six of them were fixed by the vendor in the March 2024 Patch Tuesday, while the other fourteen were closed as WontFix/vNext. The bugs were identified during my registry research in 2022-2024, alongside the [39 vulnerabilities](https://bugs.chromium.org/p/project-zero/issues/list?q=finder%3Amjurczyk%20product%3Akernel%20opened%3E2022-05-01%20opened%3C2024-01-01&can=1) filed in the Project Zero bug tracker with the 90-day deadline.
+This repository contains the descriptions and proof-of-concept exploits of 21 issues with low or unclear security impact found in the Windows Registry. They were reported to Microsoft between November 2023 and February 2025. Six of them were fixed by the vendor in the March 2024 Patch Tuesday, while the other fifteen were closed as WontFix/vNext. The bugs were identified during my registry research in 2022-2025, alongside the [42 reports](https://project-zero.issues.chromium.org/issues?q=customfield1352808:Microsoft%20customfield1352754:mjurczyk%20created%3E2022-05-01%20created%3C2024-12-31) filed in the Project Zero bug tracker with a 90-day disclosure deadline.
 
-For more information about the research, please see the blog post series starting with [The Windows Registry Adventure #1: Introduction and research results](https://googleprojectzero.blogspot.com/2024/04/the-windows-registry-adventure-1.html), as well as the [Exploring the Windows Registry as a powerful LPE attack surface](https://j00ru.vexillium.org/talks/bluehat-exploring-the-windows-registry-as-a-powerful-lpe-attack-surface/) presentation from BlueHat Redmond 2023. At the time of this writing, further talks about the registry are planned this year at [OffensiveCon](https://www.offensivecon.org/), [CONFidence](https://confidence-conference.org/) and [REcon](https://recon.cx/).
+For more information about the research, please see the blog post series starting with [The Windows Registry Adventure #1: Introduction and research results](https://googleprojectzero.blogspot.com/2024/04/the-windows-registry-adventure-1.html), as well as several conference talks I have given on the subject:
+
+* [Exploring the Windows Registry as a powerful LPE attack surface](https://j00ru.vexillium.org/talks/bluehat-exploring-the-windows-registry-as-a-powerful-lpe-attack-surface/) (BlueHat Redmond 2023)
+* [Practical Exploitation of Registry Vulnerabilities in the Windows Kernel](https://j00ru.vexillium.org/talks/offensivecon-practical-exploitation-of-windows-registry-vulnerabilities/) (OffensiveCon 2024)
+* [Windows Registry Deja Vu: The Return of Confused Deputies](https://j00ru.vexillium.org/talks/confidence-windows-registry-deja-vu-the-return-of-confused-deputies/) (CONFidence 2024)
+* [Peeling Back the Windows Registry Layers: A Bug Hunter’s Expedition](https://j00ru.vexillium.org/talks/recon-peeling-back-the-windows-registry-layers/) (REcon 2024)
 
 The issues are summarized in the table below:
 
@@ -28,3 +33,4 @@ ID|Title|Status|CVE
 18|[Windows Kernel returns success in an error path of HvCheckBin during registry hive sanitization](Reports/18\_HvCheckBin\_incorrect\_return\_value)|WontFix/vNext|-
 19|[Windows Kernel VRegDriver registry callback doesn't handle key renaming](Reports/19\_VrpRegistryCallback\_unhandled\_key\_rename)|WontFix/vNext|-
 20|[Windows Kernel enforcement of registry app hive security is inconsistent with documentation](Reports/20\_App\_hive\_security\_inconsistencies)|WontFix/vNext|-
+21|[Windows Kernel out-of-bounds reads and other issues in applockerfltr!SmpRegistryCallback](Reports/21\_Applockerfltr\_callback\_OOB_read)|WontFix/vNext|-
