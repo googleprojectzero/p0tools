@@ -49,9 +49,6 @@ cmake --build . --config Release
 ## Contributing
 Contributions are welcome! Feel free to open issues and pull requests to improve the harness or expand its functionality.
 
-## License
-This project is licensed under the MIT License. See [LICENSE](#TODO) for details.
-
 ## Contact
 For questions or discussions, feel free to reach out via GitHub issues or contact me directly.
 
