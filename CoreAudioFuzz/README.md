@@ -37,6 +37,7 @@ cd build
 cmake -G Xcode ..
 cmake --build . --config Release
 ```
+**Note:** The custom function hook instrumentation is specifically designed to be run on x86 MacOS systems
 
 ## Usage
 
