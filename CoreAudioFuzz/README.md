@@ -41,7 +41,8 @@ cmake --build . --config Release
 ## Usage
 
 ### Running the Fuzzing Harness
-- The provided `run.sh` script will run the freshly built `coreaudiofuzzer` with my fuzzing harness and function hooks applied
+- `unzip` the provided `corpus.zip` file to use high-quality input samples generated during the research
+- The provided `run.sh` script will run the freshly built `coreaudiofuzzer` with my fuzzing harness, corpus, and function hooks applied
 ```
 ./run.sh
 ```
