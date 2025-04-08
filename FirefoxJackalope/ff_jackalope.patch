@@ -1,0 +1,1045 @@
+diff --git a/build/moz.configure/toolchain.configure b/build/moz.configure/toolchain.configure
+--- a/build/moz.configure/toolchain.configure
++++ b/build/moz.configure/toolchain.configure
+@@ -3399,15 +3399,23 @@ option(
+     help="Enable experimental snapshot fuzzing support",
+ )
+ 
++option(
++    "--enable-jackalope-fuzzing",
++    help="Enable Jackalope fuzzing support",
++)
+ 
+ imply_option("--enable-fuzzing", True, when="--enable-snapshot-fuzzing")
+-
++imply_option("--enable-fuzzing", True, when="--enable-jackalope-fuzzing")
+ 
+ @depends("--enable-snapshot-fuzzing")
+ def enable_snapshot_fuzzing(value):
+     if value:
+         return True
+ 
++@depends("--enable-jackalope-fuzzing")
++def enable_jackalope_fuzzing(value):
++    if value:
++        return True
+ 
+ @depends("--enable-fuzzing", enable_snapshot_fuzzing)
+ def enable_fuzzing(value, snapshot_fuzzing):
+@@ -3464,6 +3472,9 @@ set_define("LIBFUZZER", enable_libfuzzer
+ set_config("AFLFUZZ", enable_aflfuzzer)
+ set_define("AFLFUZZ", enable_aflfuzzer)
+ 
++set_config("JACKALOPEFUZZ", enable_jackalope_fuzzing)
++set_define("JACKALOPEFUZZ", enable_jackalope_fuzzing)
++
+ set_config("FUZZING_INTERFACES", enable_fuzzing_interfaces)
+ set_define("FUZZING_INTERFACES", enable_fuzzing_interfaces)
+ 
+@@ -3482,8 +3493,9 @@ set_define("FUZZING_SNAPSHOT", enable_sn
+     ),
+     tsan,
+     enable_js_fuzzilli,
++    enable_jackalope_fuzzing
+ )
+-def libfuzzer_flags(value, tsan, enable_js_fuzzilli):
++def libfuzzer_flags(value, tsan, enable_js_fuzzilli, enable_jackalope_fuzzing):
+     if tsan:
+         # With ThreadSanitizer, we should not use any libFuzzer instrumentation because
+         # it is incompatible (e.g. there are races on global sanitizer coverage counters).
+@@ -3500,6 +3512,9 @@ def libfuzzer_flags(value, tsan, enable_
+         # Fuzzilli comes with its own trace-pc interceptors and flag requirements.
+         no_link_flag_supported = False
+         use_flags = ["-fsanitize-coverage=trace-pc-guard", "-g"]
++    elif enable_jackalope_fuzzing:
++        no_link_flag_supported = False
++        use_flags = ["-fsanitize-coverage=trace-pc-guard"]
+     elif value:
+         no_link_flag_supported = True
+         # recommended for (and only supported by) clang >= 6
+diff --git a/dom/xslt/base/moz.build b/dom/xslt/base/moz.build
+--- a/dom/xslt/base/moz.build
++++ b/dom/xslt/base/moz.build
+@@ -4,6 +4,8 @@
+ # License, v. 2.0. If a copy of the MPL was not distributed with this
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
++include("/tools/fuzzing/libfuzzer-config.mozbuild")
++
+ UNIFIED_SOURCES += [
+     "txDouble.cpp",
+     "txExpandedName.cpp",
+diff --git a/dom/xslt/fuzztest/ffgrammar.txt b/dom/xslt/fuzztest/ffgrammar.txt
+new file mode 100644
+--- /dev/null
++++ b/dom/xslt/fuzztest/ffgrammar.txt
+@@ -0,0 +1,450 @@
++<char> = <0x20>
++<char> = <0x21>
++<char> = &quot;
++<char> = <0x23>
++<char> = <0x24>
++<char> = <0x25>
++<char> = &amp;
++<char> = &apos;
++<char> = <0x28>
++<char> = <0x29>
++<char> = <0x2a>
++<char> = <0x2b>
++<char> = <0x2c>
++<char> = <0x2d>
++<char> = <0x2e>
++<char> = <0x2f>
++<char> = <0x30>
++<char> = <0x31>
++<char> = <0x32>
++<char> = <0x33>
++<char> = <0x34>
++<char> = <0x35>
++<char> = <0x36>
++<char> = <0x37>
++<char> = <0x38>
++<char> = <0x39>
++<char> = <0x3a>
++<char> = <0x3b>
++<char> = &lt;
++<char> = <0x3d>
++<char> = &gt;
++<char> = <0x3f>
++<char> = <0x40>
++<char> = <0x41>
++<char> = <0x42>
++<char> = <0x43>
++<char> = <0x44>
++<char> = <0x45>
++<char> = <0x46>
++<char> = <0x47>
++<char> = <0x48>
++<char> = <0x49>
++<char> = <0x4a>
++<char> = <0x4b>
++<char> = <0x4c>
++<char> = <0x4d>
++<char> = <0x4e>
++<char> = <0x4f>
++<char> = <0x50>
++<char> = <0x51>
++<char> = <0x52>
++<char> = <0x53>
++<char> = <0x54>
++<char> = <0x55>
++<char> = <0x56>
++<char> = <0x57>
++<char> = <0x58>
++<char> = <0x59>
++<char> = <0x5a>
++<char> = <0x5b>
++<char> = <0x5c>
++<char> = <0x5d>
++<char> = <0x5e>
++<char> = <0x5f>
++<char> = <0x60>
++<char> = <0x61>
++<char> = <0x62>
++<char> = <0x63>
++<char> = <0x64>
++<char> = <0x65>
++<char> = <0x66>
++<char> = <0x67>
++<char> = <0x68>
++<char> = <0x69>
++<char> = <0x6a>
++<char> = <0x6b>
++<char> = <0x6c>
++<char> = <0x6d>
++<char> = <0x6e>
++<char> = <0x6f>
++<char> = <0x70>
++<char> = <0x71>
++<char> = <0x72>
++<char> = <0x73>
++<char> = <0x74>
++<char> = <0x75>
++<char> = <0x76>
++<char> = <0x77>
++<char> = <0x78>
++<char> = <0x79>
++<char> = <0x7a>
++<char> = <0x7b>
++<char> = <0x7c>
++<char> = <0x7d>
++<char> = <0x7e>
++<char> = <0x7f>
++
++<str> = 
++<str> = <char><str>
++
++<root> = <xsldoc><delimiter><srcdoc>
++
++<delimiter> = <lt>!delimiter!<gt>
++
++<srcdoc> = <xmlheader><xmlelement>
++
++<xmlheader> = <lt>?xml version="1.0" encoding="UTF-8"?<gt>
++
++<xsldoc> = <xmlheader><stylesheet>
++<xsldoc> = <xmlheader><faketemplate>
++
++<version> = 1.0
++<version> = 1.1
++
++<faketemplate> = <lt><xsltagname id=2> xsl:version="<version>" xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:exsl="http://exslt.org/common" xmlns:math="http://exslt.org/math" xmlns:regexp="http://exslt.org/regular-expressions" xmlns:set="http://exslt.org/sets" xmlns:str="http://exslt.org/strings" <xslattributes><gt><xsltrules><lt>/<xsltagname id=2><gt>
++<stylesheet> = <lt>xsl:stylesheet version="<version>" xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:exsl="http://exslt.org/common" xmlns:math="http://exslt.org/math" xmlns:regexp="http://exslt.org/regular-expressions" xmlns:set="http://exslt.org/sets" xmlns:str="http://exslt.org/strings" <xslattributes><gt><xsltrules><lt>/xsl:stylesheet<gt>
++
++<nsurl> = http://www.w3.org/1999/XSL/Transform
++<nsurl> = http://www.w3.org/url1
++<nsurl> = http://www.w3.org/url2
++<nsurl> = http://www.w3.org/url3
++
++<prefix> = xsl
++<prefix> = ns1
++<prefix> = ns2
++<prefix> = ns3
++
++<nsdeclaration> = xmlns:<prefix>="<nsurl>"
++
++<maybexslprefix> = xsl:
++<maybexslprefix> = xsl:
++<maybexslprefix> = xsl:
++<maybexslprefix> = 
++
++<xslattributes> = 
++<xslattributes> = <xslattribute> <xslattributes>
++
++<xslattribute> = <nsdeclaration>
++<xslattribute> = <excludeprefix>
++<xslattribute> = <extensionprefix>
++<xslattribute> = <selectattr>
++<xslattribute> = <matchattr>
++<xslattribute> = <useattr>
++<xslattribute> = <modeattr>
++<xslattribute> = <nameattr>
++<xslattribute> = <usesetsattr>
++<xslattribute> = <namespaceattr>
++<xslattribute> = <decimalattrs>
++<xslattribute> = <testattr>
++<xslattribute> = <hrefattr>
++<xslattribute> = <terminateattr>
++<xslattribute> = <sprefixattr>
++<xslattribute> = <rprefixattr>
++<xslattribute> = <numberattrs>
++<xslattribute> = <outputattrs>
++<xslattribute> = <sortattrs>
++<xslattribute> = <methodattr>
++<xslattribute> = <versionattr>
++<xslattribute> = <elementsattr>
++<xslattribute> = <idattr>
++<xslattribute> = <priorityattr>
++<xslattribute> = <disableescattr>
++
++<excludeprefix> = <maybexslprefix>exclude-result-prefixes="<excludeprefixlist>"
++<extensionprefix> = <maybexslprefix>extension-element-prefixes="<excludeprefixlist>"
++
++<excludeprefixlist> = <prefix>
++<excludeprefixlist> = #default
++<excludeprefixlist> = <prefix> <excludeprefixlist>
++<excludeprefixlist> = #default <excludeprefixlist>
++
++<selectattr> = select="<xpath>"
++<matchattr> = match="<xpath>"
++<useattr> = use="<xpath>"
++
++<xsltrules> = 
++<xsltrules> = <repeat_xsltrule>
++<xsltrules> = <xmlelements>
++
++<xsltrule> = <lt><xsltagname id=1> <xslattributes><gt><xsltrules><lt>/<xsltagname id=1><gt>
++
++<xsltagname> = xsl:apply-imports
++<xsltagname> = xsl:apply-templates
++<xsltagname> = xsl:attribute-set
++<xsltagname> = xsl:attribute
++<xsltagname> = xsl:call-template
++<xsltagname> = xsl:choose
++<xsltagname> = xsl:comment
++<xsltagname> = xsl:copy-of
++<xsltagname> = xsl:copy
++<xsltagname> = xsl:document
++<xsltagname> = xsl:decimal-format
++<xsltagname> = xsl:element
++<xsltagname> = xsl:fallback
++<xsltagname> = xsl:for-each
++<xsltagname> = xsl:if
++<xsltagname> = xsl:import
++<xsltagname> = xsl:include
++<xsltagname> = xsl:key
++<xsltagname> = xsl:message
++<xsltagname> = xsl:namespace-alias
++<xsltagname> = xsl:number
++<xsltagname> = xsl:otherwise
++<xsltagname> = xsl:output
++<xsltagname> = xsl:param
++<xsltagname> = xsl:preserve-space
++<xsltagname> = xsl:processing-instruction
++<xsltagname> = xsl:sort
++<xsltagname> = xsl:strip-space
++<xsltagname> = xsl:stylesheet
++<xsltagname> = xsl:template
++<xsltagname> = xsl:text
++<xsltagname> = xsl:transform
++<xsltagname> = xsl:value-of
++<xsltagname> = xsl:variable
++<xsltagname> = xsl:when
++<xsltagname> = xsl:with-param
++
++<modeattr> = mode="<modename>"
++<nameattr> = name="<name>"
++<usesetsattr> = use-attribute-sets="<names>"
++<namespaceattr> = namespace="<nsurl>"
++<testattr> = test="<xpath>"
++<hrefattr> = href="<href>"
++<terminateattr> = terminate="<yesno>"
++<sprefixattr> = stylesheet-prefix="<prefix>"
++<rprefixattr> = result-prefix="<prefix>"
++<methodattr> = method="<method>"
++<versionattr> = version="<version>"
++<elementsattr> = elements="<elementlist>"
++<idattr> = id="<name>"
++<priorityattr> = priority="<number>"
++<disableescattr> = disable-output-escaping="<yesno>"
++
++<decimalattrs> = decimal-separator="<char>" grouping-separator="<char>" infinity="<str>" minus-sign="<char>" NaN="<str>" percent="<char>" per-mille="<char>" zero-digit="<char>" digit=<char> pattern-separator="<char>"
++<numberattrs> = count="<xpath>" level="<nlevel>" from="<xpath>" value="<xpath>" format="<str>" letter-value="<lettervalue>" grouping-separator="<char>" grouping-size="<number>"
++<outputattrs> = version="<version>" omit-xml-declaration="<yesno>" standalone="<yesno>" cdata-section-elements="<names>" indent="<yesno>"
++<sortattrs> = order="<order>" case-order="<caseorder>" data-type="<datatype>"
++
++<nlevel> = single
++<nlevel> = multiple
++<nlevel> = any
++
++<order> = ascending
++<order> = descending
++
++<caseorder> = upper-first
++<caseorder> = lower-first
++
++<datatype> = text
++<datatype> = number
++
++<lettervalue> = alphabetic
++<lettervalue> = traditional
++
++<method> = xml
++<method> = html
++<method> = txt
++
++<modename> = mode1
++<modename> = mode2
++
++<name> = name1
++<name> = name2
++<name> = name3
++<name> = name4
++
++<names> = <name>
++<names> = <name> <names>
++
++<href> = template1.xsl
++<href> = template2.xsl
++<href> = template3.xsl
++
++<yesno> = yes
++<yesno> = no
++
++<number> = 0
++<number> = 1
++<number> = 2
++<number> = 3
++
++<elementlist> = <tagname>
++<elementlist> = <tagname> <elementlist>
++
++
++######### regular xml #########
++
++#todo <? ... ?>
++
++<xmlelements> = 
++<xmlelements> =  
++<xmlelements> = <repeat_xmlelement>
++
++<xmlelement> = <str>
++<xmlelement> = <xsltrule>
++<xmlelement> = <lt><xmltagname id=1> <xmlattributes><gt><xmlelements><lt>/<xmltagname id=1><gt>
++<xmltagname> = <maybeprefix><tagname>
++
++<maybeprefix> = 
++<maybeprefix> = 
++<maybeprefix> = 
++<maybeprefix> = <prefix>:
++
++<xmlattributes> = 
++<xmlattributes> = <xmlattribute> <xmlattributes>
++
++<xmlattribute> = <attrname>="<avt>"
++<xmlattribute> = <attrname>="<avt>"
++<xmlattribute> = <attrname>="<avt>"
++<xmlattribute> = <attrname>="<avt>"
++<xmlattribute> = <nsdeclaration>
++
++<avt> = <avtelement>
++<avt> = <avtelement><avt>
++
++<avtelement> = <str>
++<avtelement> = {<xpath>}
++
++<tagname> = aaa
++<tagname> = bbb
++<tagname> = ccc
++<tagname> = ddd
++<tagname> = eee
++
++<attrname> = att1
++<attrname> = att2
++<attrname> = att3
++<attrname> = att4
++<attrname> = att5
++
++<documenturi> = doc1.xml
++<documenturi> = doc2.xml
++<documenturi> = doc3.xml
++
++######### xpath ########
++
++<xpath> = <xpathelement><otherxpath>
++
++<otherxpath> = 
++<otherxpath> = <xpathelement><otherxpath>
++
++<xpathelement> = <tagname>
++<xpathelement> = <attrname>
++<xpathelement> = <prefix>
++<xpathelement> = <number>
++<xpathelement> = '<str>'
++<xpathelement> = '<name>'
++<xpathelement> = $<name>
++<xpathelement> = /
++<xpathelement> = *
++<xpathelement> = .
++<xpathelement> =  
++<xpathelement> = #
++<xpathelement> = |
++<xpathelement> = @<attrname>
++<xpathelement> = [<xpath>]
++<xpathelement> = <axisspecifier>::
++<xpathelement> = <xpathfn>(<xpathargs>)
++<xpathelement> = document('<documenturi>')
++<xpathelement> = key('<name>',<xpath>)
++<xpathelement> = <xpathop>
++
++<xpathargs> = <xpath>
++<xpathargs> = <xpath>, <xpathargs>
++
++<axisspecifier> = ancestor
++<axisspecifier> = ancestor-or-self
++<axisspecifier> = attribute
++<axisspecifier> = child
++<axisspecifier> = descendant
++<axisspecifier> = descendant-or-self
++<axisspecifier> = following
++<axisspecifier> = following-sibling
++<axisspecifier> = namespace
++<axisspecifier> = parent
++<axisspecifier> = preceding
++<axisspecifier> = preceding-sibling
++<axisspecifier> = self
++
++<xpathfn> = boolean
++<xpathfn> = ceiling
++<xpathfn> = choose
++<xpathfn> = concat
++<xpathfn> = contains
++<xpathfn> = count
++<xpathfn> = current
++<xpathfn> = element-available
++<xpathfn> = false
++<xpathfn> = floor
++<xpathfn> = format-number
++<xpathfn> = function-available
++<xpathfn> = generate-id
++<xpathfn> = id
++<xpathfn> = key
++<xpathfn> = lang
++<xpathfn> = last
++<xpathfn> = local-name
++<xpathfn> = namespace-uri
++<xpathfn> = normalize-space
++<xpathfn> = not
++<xpathfn> = number
++<xpathfn> = position
++<xpathfn> = round
++<xpathfn> = starts-with
++<xpathfn> = string
++<xpathfn> = string-length
++<xpathfn> = substring
++<xpathfn> = substring-after
++<xpathfn> = substring-before
++<xpathfn> = sum
++<xpathfn> = system-property
++<xpathfn> = translate
++<xpathfn> = true
++<xpathfn> = unparsed-entity-url
++
++<xpathfn> = exsl:node-set
++<xpathfn> = exsl:object-type
++<xpathfn> = math:highest
++<xpathfn> = math:lowest
++<xpathfn> = math:max
++<xpathfn> = math:min
++# <xpathfn> = regexp:match
++# <xpathfn> = regexp:replace
++# <xpathfn> = regexp:test
++<xpathfn> = set:difference
++<xpathfn> = set:distinct
++<xpathfn> = set:has-same-node
++<xpathfn> = set:intersection
++<xpathfn> = set:leading
++<xpathfn> = set:trailing
++<xpathfn> = str:concat
++<xpathfn> = str:split
++<xpathfn> = str:tokenize
++
++<xpathop> = and
++<xpathop> = or
++<xpathop> = +
++<xpathop> = -
++<xpathop> = *
++<xpathop> = div
++<xpathop> = mod
++<xpathop> = =
++<xpathop> = !=
++<xpathop> = <lt>
++<xpathop> = <gt>
++<xpathop> = <lt>=
++<xpathop> = <gt>=
++
++
+diff --git a/dom/xslt/fuzztest/moz.build b/dom/xslt/fuzztest/moz.build
+new file mode 100644
+--- /dev/null
++++ b/dom/xslt/fuzztest/moz.build
+@@ -0,0 +1,19 @@
++# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
++# vim: set filetype=python:
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++Library("FuzzingXSLT")
++
++LOCAL_INCLUDES += [
++    "/dom/xslt",
++    "/dom/xslt/base",
++]
++
++include("/tools/fuzzing/libfuzzer-config.mozbuild")
++
++SOURCES += ["xslt_fuzzer.cpp"]
++
++FINAL_LIBRARY = "xul"
++
+diff --git a/dom/xslt/fuzztest/xslt_fuzzer.cpp b/dom/xslt/fuzztest/xslt_fuzzer.cpp
+new file mode 100644
+--- /dev/null
++++ b/dom/xslt/fuzztest/xslt_fuzzer.cpp
+@@ -0,0 +1,62 @@
++#include <string>
++
++#include "nsCOMPtr.h"
++#include "nsString.h"
++#include "mozilla/ErrorResult.h"
++#include "mozilla/dom/DOMParser.h"
++#include "mozilla/dom/Document.h"
++#include "mozilla/dom/txMozillaXSLTProcessor.h"
++#include "nsJSEnvironment.h"
++#include "js/GCAPI.h"
++
++#include "FuzzingInterface.h"
++
++#define DELIMITER "<!delimiter!>"
++
++already_AddRefed<mozilla::dom::Document> ParseDoc(const char *inp) {
++  nsAutoString str;
++  str.AssignASCII(inp);
++
++  mozilla::IgnoredErrorResult er;
++  RefPtr<mozilla::dom::DOMParser> parser =
++      mozilla::dom::DOMParser::CreateWithoutGlobal(er);
++
++  return parser->ParseFromStringInternal(str, mozilla::dom::SupportedType::Application_xml, er);
++}
++
++static int FuzzingRunXSLT(const uint8_t* data, size_t size) {
++  int ret = 1;
++
++  std::string input((const char *)data, size);
++  size_t delimiter_pos = input.find(DELIMITER);
++  if(delimiter_pos == std::string::npos) {
++    printf("Incorrectly formatted sample\n");
++    return 0;
++  }
++  std::string templatestr = input.substr(0, delimiter_pos);
++  std::string srcstr = input.substr(delimiter_pos + strlen(DELIMITER), std::string::npos);
++
++  mozilla::IgnoredErrorResult er;
++
++  RefPtr<mozilla::dom::Document> xmlDoc = ParseDoc(srcstr.c_str());
++  RefPtr<mozilla::dom::Document> xsltDoc = ParseDoc(templatestr.c_str());
++
++  RefPtr<txMozillaXSLTProcessor> xsltProcessor = new txMozillaXSLTProcessor();
++  xsltProcessor->ImportStylesheet(*xsltDoc, er);
++  if(!er.Failed()) {
++    RefPtr<mozilla::dom::DocumentFragment> resultDocument = xsltProcessor->TransformToFragment(*xmlDoc, *xmlDoc, er);
++    if(!er.Failed()) {
++      ret = 0;
++    }
++  }
++
++  nsJSContext::GarbageCollectNow(JS::GCReason::COMPONENT_UTILS,
++                                 nsJSContext::NonShrinkingGC);
++  nsJSContext::CycleCollectNow(mozilla::CCReason::API);
++
++  return ret;
++}
++
++MOZ_FUZZING_INTERFACE_RAW(nullptr, FuzzingRunXSLT,
++                          XSLTFuzzer);
++
+diff --git a/dom/xslt/moz.build b/dom/xslt/moz.build
+--- a/dom/xslt/moz.build
++++ b/dom/xslt/moz.build
+@@ -4,6 +4,8 @@
+ # License, v. 2.0. If a copy of the MPL was not distributed with this
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
++include("/tools/fuzzing/libfuzzer-config.mozbuild")
++
+ with Files("**"):
+     BUG_COMPONENT = ("Core", "XSLT")
+ 
+@@ -18,6 +20,9 @@ DIRS += [
+     "xslt",
+ ]
+ 
++if CONFIG["FUZZING_INTERFACES"]:
++    TEST_DIRS += ["fuzztest"]
++
+ if CONFIG["ENABLE_TESTS"]:
+     MOCHITEST_MANIFESTS += ["tests/mochitest/mochitest.toml"]
+     BROWSER_CHROME_MANIFESTS += ["tests/browser/browser.toml"]
+diff --git a/dom/xslt/xml/moz.build b/dom/xslt/xml/moz.build
+--- a/dom/xslt/xml/moz.build
++++ b/dom/xslt/xml/moz.build
+@@ -4,6 +4,8 @@
+ # License, v. 2.0. If a copy of the MPL was not distributed with this
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
++include("/tools/fuzzing/libfuzzer-config.mozbuild")
++
+ UNIFIED_SOURCES += [
+     "txXMLParser.cpp",
+     "txXMLUtils.cpp",
+diff --git a/dom/xslt/xpath/moz.build b/dom/xslt/xpath/moz.build
+--- a/dom/xslt/xpath/moz.build
++++ b/dom/xslt/xpath/moz.build
+@@ -4,6 +4,8 @@
+ # License, v. 2.0. If a copy of the MPL was not distributed with this
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
++include("/tools/fuzzing/libfuzzer-config.mozbuild")
++
+ EXPORTS.mozilla.dom += [
+     "txIXPathContext.h",
+     "XPathEvaluator.h",
+diff --git a/dom/xslt/xslt/moz.build b/dom/xslt/xslt/moz.build
+--- a/dom/xslt/xslt/moz.build
++++ b/dom/xslt/xslt/moz.build
+@@ -4,6 +4,8 @@
+ # License, v. 2.0. If a copy of the MPL was not distributed with this
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
++include("/tools/fuzzing/libfuzzer-config.mozbuild")
++
+ EXPORTS.mozilla.dom += [
+     "txMozillaXSLTProcessor.h",
+     "txXSLTMsgsURL.h",
+diff --git a/tools/fuzzing/interface/FuzzingInterface.h b/tools/fuzzing/interface/FuzzingInterface.h
+--- a/tools/fuzzing/interface/FuzzingInterface.h
++++ b/tools/fuzzing/interface/FuzzingInterface.h
+@@ -13,8 +13,10 @@
+ #include <fstream>
+ 
+ #ifdef LIBFUZZER
++#ifndef JACKALOPEFUZZ
+ #  include "FuzzerExtFunctions.h"
+ #endif
++#endif
+ 
+ #include "FuzzerRegistry.h"
+ #include "mozilla/Assertions.h"
+diff --git a/tools/fuzzing/jackalope/FuzzerDefs.h b/tools/fuzzing/jackalope/FuzzerDefs.h
+new file mode 100644
+--- /dev/null
++++ b/tools/fuzzing/jackalope/FuzzerDefs.h
+@@ -0,0 +1,15 @@
++#ifndef FUZZERDEFS_H
++#define FUZZERDEFS_H
++
++#include <cstdint>
++
++namespace fuzzer {
++
++typedef int (*UserCallback)(const uint8_t *Data, size_t Size);
++
++int FuzzerDriver(int *argc, char ***argv, UserCallback Callback);
++
++} // namespace fuzzer
++
++#endif
++
+diff --git a/tools/fuzzing/jackalope/jackalope.cpp b/tools/fuzzing/jackalope/jackalope.cpp
+new file mode 100644
+--- /dev/null
++++ b/tools/fuzzing/jackalope/jackalope.cpp
+@@ -0,0 +1,277 @@
++#include <stdlib.h>
++#include <unistd.h>
++#include <fcntl.h>
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/wait.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <errno.h>
++
++#define ATTRIBUTE_INTERFACE __attribute__((visibility("default")))
++
++#if defined(__has_feature)
++#if __has_feature(address_sanitizer)
++#define ATTRIBUTE_NO_SANITIZE_ALL ATTRIBUTE_NO_SANITIZE_ADDRESS
++#elif __has_feature(memory_sanitizer)
++#define ATTRIBUTE_NO_SANITIZE_ALL ATTRIBUTE_NO_SANITIZE_MEMORY
++#else
++#define ATTRIBUTE_NO_SANITIZE_ALL
++#endif
++#else
++#define ATTRIBUTE_NO_SANITIZE_ALL
++#endif
++
++#define FUZZ_CHILD_CTRL_IN 1000
++#define FUZZ_CHILD_CTRL_OUT 1001
++
++#define COV_SHM_SIZE 0x100000
++#define MAX_EDGES ((COV_SHM_SIZE - 4) * 8)
++
++#define CHECK(cond) if (!(cond)) { fprintf(stderr, "\"" #cond "\" failed\n"); _exit(-1); }
++
++#define SAY(...)    printf(__VA_ARGS__)
++
++#define WARN(...) do { \
++    SAY("[!] WARNING: " __VA_ARGS__); \
++    SAY("\n"); \
++  } while (0)
++
++#define FATAL(...) do { \
++    SAY("[-] PROGRAM ABORT : " __VA_ARGS__); \
++    SAY("         Location : %s(), %s:%u\n\n", \
++         __FUNCTION__, __FILE__, __LINE__); \
++    exit(1); \
++  } while (0)
++
++struct cov_shmem_data {
++    uint32_t num_edges;
++    unsigned char edges[];
++};
++cov_shmem_data* cov_shmem = NULL;
++
++struct coverage_module {
++   uint32_t *edges_start;
++   uint32_t *edges_stop;
++};
++coverage_module *coverage_modules = NULL;
++size_t num_coverage_modules = 0;
++
++void __sanitizer_cov_reset_edgeguards() {
++  uint64_t N = 0;
++  for(size_t i = 0; i < num_coverage_modules; i++) {
++    uint32_t *edges_start = coverage_modules[i].edges_start;
++    uint32_t *edges_stop = coverage_modules[i].edges_stop;
++    for (uint32_t *x = edges_start; x < edges_stop && N < MAX_EDGES; x++)
++      *x = ++N;
++  }
++}
++
++uint32_t get_num_edges() {
++  uint32_t num_edges = 0;
++  for(size_t i = 0; i < num_coverage_modules; i++) {
++    num_edges += (coverage_modules[i].edges_stop - coverage_modules[i].edges_start);
++  }
++  return num_edges;
++}
++
++extern char **environ;
++bool in_fuzzer = false;
++
++extern "C" {
++
++ATTRIBUTE_INTERFACE
++void __sanitizer_cov_trace_pc_guard_init(uint32_t *start, uint32_t *stop) {
++  // Avoid duplicate initialization
++  if (start == stop || *start)
++    return;
++
++  coverage_modules = (coverage_module *)realloc(coverage_modules, (num_coverage_modules + 1) * sizeof(coverage_module));
++  coverage_modules[num_coverage_modules].edges_start = start;
++  coverage_modules[num_coverage_modules].edges_stop = stop;
++  num_coverage_modules++;
++
++  // Map the shared memory region
++  const char* shm_key = getenv("COV_SHM_ID");
++  if(!cov_shmem) {
++    if (!shm_key) {
++      puts("[COV] no shared memory bitmap available, skipping");
++      cov_shmem = (struct cov_shmem_data*) malloc(COV_SHM_SIZE);
++      memset(cov_shmem, 0, COV_SHM_SIZE);
++    } else {
++      in_fuzzer = true;
++      int fd = shm_open(shm_key, O_RDWR, S_IREAD | S_IWRITE);
++      if (fd <= -1) {
++        fprintf(stderr, "Failed to open shared memory region: %s\n", strerror(errno));
++        _exit(-1);
++      }
++
++      cov_shmem = (struct cov_shmem_data*) mmap(0, COV_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
++      if (cov_shmem == MAP_FAILED) {
++        fprintf(stderr, "Failed to mmap shared memory region\n");
++        _exit(-1);
++      }
++    }
++  }
++
++  __sanitizer_cov_reset_edgeguards();
++
++  // needed in case of multiple processes, which might mess up num_edges
++  uint32_t cur_process_num_edges = get_num_edges();
++  if(cur_process_num_edges > cov_shmem->num_edges)
++    cov_shmem->num_edges = cur_process_num_edges;
++
++  printf("[COV] edge counters updated. Shared memory: %s with %u edges\n", shm_key, cov_shmem->num_edges);
++}
++
++ATTRIBUTE_INTERFACE
++ATTRIBUTE_NO_SANITIZE_ALL
++void __sanitizer_cov_trace_pc_guard(uint32_t *guard) {
++  // There's a small race condition here: if this function executes in two threads for the same
++  // edge at the same time, the first thread might disable the edge (by setting the guard to zero)
++  // before the second thread fetches the guard value (and thus the index). However, our
++  // instrumentation ignores the first edge (see libcoverage.c) and so the race is unproblematic.
++  uint32_t index = *guard;
++  // printf("%d\n", index);
++  // If this function is called before coverage instrumentation is properly initialized we want to return early.
++  if (!index) return;
++  cov_shmem->edges[index / 8] |= 1 << (index % 8);
++  *guard = 0;
++}
++
++}
++
++void __pre_fuzz() {
++  if(!in_fuzzer) return;
++  __sanitizer_cov_reset_edgeguards();
++  int ret;
++  char status;
++  status = 'k';
++  ret = write(FUZZ_CHILD_CTRL_OUT, &status, 1);
++  if(ret != 1) _exit(0);
++  ret = read(FUZZ_CHILD_CTRL_IN, &status, 1);
++  if((ret!=1) || (status != 'c')) _exit(0);
++}
++
++void __post_fuzz(uint64_t return_value) {
++  if(!in_fuzzer) {
++    printf("Jackalope FuzzerDriver done\n");
++    exit(0);
++  }
++  int ret;
++  char status;
++  status = 'd';
++  ret = write(FUZZ_CHILD_CTRL_OUT, &status, 1);
++  if(ret != 1) _exit(0);
++  ret = write(FUZZ_CHILD_CTRL_OUT, &return_value, sizeof(return_value));
++  if(ret != sizeof(return_value)) _exit(0);
++  ret = read(FUZZ_CHILD_CTRL_IN, &status, 1);
++  if((ret!=1) || (status != 'c')) _exit(0);
++}
++
++#define JACKALOPE_FUZZ_LOOP(X) while(1) {__pre_fuzz();  uint64_t fuzz_ret = (X); __post_fuzz(fuzz_ret); }
++
++
++#define MAX_SAMPLE_SIZE 1000000
++#define SAMPLE_SHM_SIZE (4 + MAX_SAMPLE_SIZE)
++unsigned char *shm_data;
++
++bool use_shared_memory;
++
++int setup_shmem(const char *name)
++{
++  int fd;
++
++  // get shared memory file descriptor (NOT a file)
++  fd = shm_open(name, O_RDONLY, S_IRUSR | S_IWUSR);
++  if (fd == -1)
++  {
++    printf("Error in shm_open\n");
++    return 0;
++  }
++
++  // map shared memory to process address space
++  shm_data = (unsigned char *)mmap(NULL, SAMPLE_SHM_SIZE, PROT_READ, MAP_SHARED, fd, 0);
++  if (shm_data == MAP_FAILED)
++  {
++    printf("Error in mmap\n");
++    return 0;
++  }
++
++  return 1;
++}
++
++
++#include "FuzzerDefs.h"
++
++namespace fuzzer {
++
++uint64_t do_fuzz(char *name, UserCallback Callback) {
++  char *sample_bytes = NULL;
++  uint32_t sample_size = 0;
++
++  // read the sample either from file or
++  // shared memory
++  if(use_shared_memory) {
++    sample_size = *(uint32_t *)(shm_data);
++    if(sample_size > MAX_SAMPLE_SIZE) sample_size = MAX_SAMPLE_SIZE;
++    sample_bytes = (char *)malloc(sample_size + 1);
++    memcpy(sample_bytes, shm_data + sizeof(uint32_t), sample_size);
++    sample_bytes[sample_size] = 0;
++  } else {
++    FILE *fp = fopen(name, "rb");
++    if(!fp) {
++      printf("Error opening %s\n", name);
++      return 0;
++    }
++    fseek(fp, 0, SEEK_END);
++    sample_size = ftell(fp);
++    fseek(fp, 0, SEEK_SET);
++    sample_bytes = (char *)malloc(sample_size + 1);
++    fread(sample_bytes, 1, sample_size, fp);
++    sample_bytes[sample_size] = 0;
++    fclose(fp);
++  }
++
++  int ret = Callback((const unsigned char *)sample_bytes, sample_size);
++
++  if(sample_bytes) free(sample_bytes);
++
++  return (uint64_t)ret;
++}
++
++
++int FuzzerDriver(int *_argc, char ***_argv, UserCallback Callback) {
++  printf("In Jackalope FuzzerDriver\n");
++  int argc = *_argc;
++  char **argv = *_argv;
++
++  if(argc != 3) {
++    printf("Usage: %s <-f|-m> <file or shared memory name>\n", argv[0]);
++    return 0;
++  }
++
++  if(!strcmp(argv[1], "-m")) {
++    use_shared_memory = true;
++  } else if(!strcmp(argv[1], "-f")) {
++    use_shared_memory = false;
++  } else {
++    printf("Usage: %s <-f|-m> <file or shared memory name>\n", argv[0]);
++    return 0;
++  }
++
++  // map shared memory here as we don't want to do it
++  // for every operation
++  if(use_shared_memory) {
++    if(!setup_shmem(argv[2])) {
++      printf("Error mapping shared memory\n");
++    }
++  }
++
++  JACKALOPE_FUZZ_LOOP(do_fuzz(argv[2], Callback))
++
++  return 0;
++}
++
++} // namespace fuzzer
+diff --git a/tools/fuzzing/jackalope/moz.build b/tools/fuzzing/jackalope/moz.build
+new file mode 100644
+--- /dev/null
++++ b/tools/fuzzing/jackalope/moz.build
+@@ -0,0 +1,32 @@
++# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
++# vim: set filetype=python:
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++Library('fuzzer')
++
++EXPORTS += [
++    'FuzzerDefs.h',
++]
++
++SOURCES += [
++    'jackalope.cpp',
++]
++
++if CONFIG['CC_TYPE'] == 'clang':
++    CXXFLAGS += ['-Wno-unreachable-code-return']
++
++# According to the LLVM docs, LibFuzzer isn't supposed to be built with any
++# sanitizer flags and in fact, building it with ASan coverage currently causes
++# Clang 3.9+ to crash, so we filter out all sanitizer-related flags here.
++for flags_var in ('OS_CFLAGS', 'OS_CXXFLAGS'):
++    COMPILE_FLAGS[flags_var] = [
++        f for f in COMPILE_FLAGS.get(flags_var, [])
++        if not f.startswith(('-fsanitize', '-fno-sanitize-'))
++    ]
++
++LINK_FLAGS['OS'] = [
++    f for f in LINK_FLAGS.get('OS', [])
++    if not f.startswith(('-fsanitize', '-fno-sanitize-'))
++]
+diff --git a/tools/fuzzing/moz.build b/tools/fuzzing/moz.build
+--- a/tools/fuzzing/moz.build
++++ b/tools/fuzzing/moz.build
+@@ -27,7 +27,12 @@ if not CONFIG["JS_STANDALONE"]:
+             "rust",
+         ]
+ 
+-if CONFIG["LIBFUZZER"]:
++if CONFIG["JACKALOPEFUZZ"]:
++    DIRS += [
++        "jackalope",
++    ]
++elif CONFIG["LIBFUZZER"]:
+     DIRS += [
+         "libfuzzer",
+     ]
++
