@@ -6,7 +6,7 @@ The .patch also contains a target and the corresponding grammar for fuzzing Fire
 
 Note: The patch was created in February 2025 and might not apply cleanly to later versions.
 
-An example mozconfig file suitable for fuzzing is included in this directory.
+An example mozconfig file suitable for fuzzing is included in this directory. You might also need to run `./mach gtest dontruntests` according to [this section in Firefox documentation](https://firefox-source-docs.mozilla.org/tools/fuzzing/fuzzing_interface.html#local-build-requirements-and-flags).
 
 Once Jackalope and Firefox have been built, the XSLT fuzzer can be ran using the following example command line:
 
