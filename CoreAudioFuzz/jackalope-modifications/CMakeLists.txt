@@ -17,6 +17,16 @@ set (CMAKE_CXX_STANDARD 17)
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/Jackalope)
 
+if(APPLE)
+  # If the active architecture is arm64 (Apple Silicon), define the same macros
+  # Jackalope uses so <tinyinst.h> selects the correct code paths.
+  if("${CMAKE_OSX_ARCHITECTURES}" MATCHES "arm64" OR
+     CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "arm64")
+    message(STATUS "Configuring CoreAudioFuzz for Apple Silicon (arm64)")
+    add_definitions(-D__arm64__=1 -D__aarch64__=1 -DARM64=1)
+  endif()
+endif()
+
 add_subdirectory(Jackalope)
 
 add_executable(coreaudiofuzzer

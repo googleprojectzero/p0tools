@@ -19,6 +19,7 @@ limitations under the License.
 void HALSWriteSettingHook::OnFunctionEntered() {
     printf("HALS_SettingsManager::_WriteSetting Entered\n");
 
+#if defined(__x86_64__)
     if (!GetRegister(RDX)) {
         printf("NULL plist passed as argument, returning to prevent NULL CFRelease\n");
         printf("Current $RSP: %p\n", GetRegister(RSP));
@@ -38,6 +39,27 @@ void HALSWriteSettingHook::OnFunctionEntered() {
 
         printf("$RSP is now: %p\n", GetRegister(RSP));
     }
+#elif defined(__arm64__)
+    // On Apple Silicon, use X2 instead of RDX, SP instead of RSP, PC instead of RIP
+    if (!GetRegister(X2)) {
+        printf("NULL plist passed as argument, returning to prevent NULL CFRelease\n");
+        printf("Current SP: %p\n", GetRegister(SP));
+
+        void *return_address;
+        RemoteRead((void*)GetRegister(SP), &return_address, sizeof(void *));
+        printf("Current return address: %p\n", GetReturnAddress());
+        printf("Current PC: %p\n", GetRegister(PC));
+
+        SetRegister(X0, 0); // X0 is usually return value on ARM64
+        SetRegister(PC, GetReturnAddress());
+        printf("PC register is now: %p\n", GetRegister(ARCH_PC));
+
+        SetRegister(SP, GetRegister(SP) + 8); // Simulate a return instruction
+        printf("SP is now: %p\n", GetRegister(SP));
+    }
+#else
+#error "Unsupported architecture"
+#endif
 }
 
 FunctionHookInst::FunctionHookInst() {
