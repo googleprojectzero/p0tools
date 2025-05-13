@@ -2,7 +2,7 @@
 
 ## Overview
 
-This repository contains an open-source fuzzing harness designed to fuzz Apple's CoreAudio framework using Mach messages. The harness integrates with [Jackalope](https://github.com/googleprojectzero/Jackalope) and [TinyInst](https://github.com/googleprojectzero/TinyInst) to facilitate black box dynamic instrumentation and fuzzing. This work serves as a companion to my [Project Zero Blog Post](#TODO), demonstrating how to identify and analyze vulnerabilities in macOS's `coreaudiod` process.
+This repository contains an open-source fuzzing harness designed to fuzz Apple's CoreAudio framework using Mach messages. The harness integrates with [Jackalope](https://github.com/googleprojectzero/Jackalope) and [TinyInst](https://github.com/googleprojectzero/TinyInst) to facilitate black box dynamic instrumentation and fuzzing. This work serves as a companion to my [Project Zero Blog Post](https://googleprojectzero.blogspot.com/2025/05/breaking-sound-barrier-part-i-fuzzing.html), demonstrating how to identify and analyze vulnerabilities in macOS's `coreaudiod` process.
 
 ## Features
 - **Fuzzing Harness**: A specialized harness for fuzzing CoreAudio via Mach messages.
@@ -47,6 +47,10 @@ cmake --build . --config Release
 ```
 ./run.sh
 ```
+
+## Vulnerabilities Discovered
+- [CVE-2024-54529](https://nvd.nist.gov/vuln/detail/CVE-2024-54529) (Type Confusion in CoreAudio)
+- [CVE-2025-31235](https://nvd.nist.gov/vuln/detail/CVE-2025-31235) (Double Free in CoreAudio)
 
 ## Contributing
 Contributions are welcome! Feel free to open issues and pull requests to improve the harness or expand its functionality.
